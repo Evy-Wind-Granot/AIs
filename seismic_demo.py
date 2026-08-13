@@ -262,9 +262,50 @@ def deduplicate_picks(picks, tolerance_s=1.0):
     return sorted(unique, key=lambda p: p.peak_time)
 
 
+
+# ---------------------------------------------------------------------------
+# JSON serialization
+# ---------------------------------------------------------------------------
+def pick_to_dict(p):
+    """Convert a seisbench Pick object to a plain JSON-serializable dict."""
+    return {
+        "phase": getattr(p, "phase", None),
+        "time": str(getattr(p, "peak_time", None)),
+        "probability": float(getattr(p, "peak_value", 0.0)),
+        "model": getattr(p, "model", "unknown"),
+        "trace_id": getattr(p, "trace_id", None),
+    }
+
+
+def save_picks_to_json(picks, filepath):
+    """Serialize a list of Pick objects to a JSON file."""
+    data = {
+        "count": len(picks),
+        "picks": [pick_to_dict(p) for p in picks],
+    }
+    with open(filepath, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"  → Saved {len(picks)} picks to {filepath}")
+
 # ---------------------------------------------------------------------------
 # Model inference
 # ---------------------------------------------------------------------------
+
+def intersection_picks(picks_a, picks_b, tolerance_s=1.0):
+    """
+    Return picks from picks_a that have a matching pick in picks_b
+    (same phase, within tolerance_s seconds).
+    """
+    matched = []
+    for a in picks_a:
+        for b in picks_b:
+            if (a.phase == b.phase and
+                abs(float(a.peak_time) - float(b.peak_time)) <= tolerance_s):
+                matched.append(a)
+                break
+    return matched
+
+
 def run_phasenet(stream, model):
     annotations = model.annotate(stream)
     picks = model.classify(stream).picks
@@ -419,6 +460,21 @@ def main():
 
     print(f"\nCombined total unique picks: {len(combined_unique)}")
     report_picks(combined_unique, "Combined")
+
+    # -----------------------------------------------------------------------
+    # Save picks to JSON files
+    # -----------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("SAVING PICKS TO JSON")
+    print("=" * 60)
+
+    save_picks_to_json(pn_unique, "phasenet_picks.json")
+    save_picks_to_json(eqt_unique, "eqtransformer_picks.json")
+    save_picks_to_json(combined_unique, "combined_picks.json")
+
+    # Intersection picks (appear in both PhaseNet and EQTransformer)
+    intersection = intersection_picks(pn_unique, eqt_unique, tolerance_s=1.0)
+    save_picks_to_json(intersection, "intersection_picks.json")
 
     # Agreement stats (tolerance-based, avoids hashing UTCDateTime)
     agreement = 0
