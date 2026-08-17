@@ -12,11 +12,13 @@ from .legacy_core import main_entry, run_cli, run_loop
 # Numerical baseline implementation extracted from the monolith.
 from .baseline import build_design_matrix, handle_gaps, robust_harmonic_baseline
 
-# Activity classification implementation extracted from the monolith.  The
-# wrappers below preserve the legacy module's runtime configuration: config
-# files and CLI options still update legacy_core globals, while the actual
-# numerical work now executes in the focused classification module.
+# Activity classification implementation extracted from the monolith.
 from . import classification as _classification
+
+# Causal streaming detector for live sensor ingestion. It is intentionally
+# independent from acquisition/network code so MQTT, serial, HTTP and other
+# transports can feed the same deterministic detector.
+from .live import LiveConfig, LiveDetector
 
 # Strict config loader: rejects unknown keys and accepts flat FLAG_* JSON.
 from .config_strict import load_config as _strict_load_config
