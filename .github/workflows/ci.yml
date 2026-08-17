@@ -26,19 +26,20 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Lint
-        run: python -m flake8 magnetometer test_magnetometer_demo.py test_historical_validation.py run_magnetometer.py validate_historical_magnetometer.py magnetometer_demo.py
+        run: python -m flake8 magnetometer test_magnetometer_demo.py test_historical_validation.py test_calibration.py calibrate_historical_magnetometer.py run_magnetometer.py validate_historical_magnetometer.py magnetometer_demo.py
 
       - name: Type check
         run: |
           python -m mypy magnetometer_demo.py calibrate_observatory.py \
             calibrate_thresholds.py tune_thresholds.py validate_periods.py \
-            run_magnetometer.py validate_historical_magnetometer.py \
-            test_magnetometer_demo.py test_historical_validation.py magnetometer
+            calibrate_historical_magnetometer.py run_magnetometer.py validate_historical_magnetometer.py \
+            test_magnetometer_demo.py test_historical_validation.py test_calibration.py magnetometer
 
       - name: Offline regression tests
         run: |
           python test_magnetometer_demo.py
           python test_historical_validation.py
+          python test_calibration.py
 
       - name: CLI import smoke test
-        run: python -c "import magnetometer; import magnetometer_demo; import run_magnetometer; import validate_historical_magnetometer"
+        run: python -c "import magnetometer; import magnetometer_demo; import run_magnetometer; import validate_historical_magnetometer; import calibrate_historical_magnetometer"
