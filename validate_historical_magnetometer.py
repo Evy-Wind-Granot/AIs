@@ -232,18 +232,27 @@ class Aggregator:
         local_counts["fp"] = local_counts.get("fp", 0) + int(np.sum(pred & valid & ~truth))
         local_counts["tn"] = local_counts.get("tn", 0) + int(np.sum(~pred & valid & ~truth))
 
-        # Five-level confusion matrix. Invalid local predictions are excluded;
-        # this keeps the matrix scientifically meaningful instead of treating
-        # missing samples as quiet predictions.
-        local_i = local_levels.astype(np.int64, copy=False)
-        global_i = global_level.astype(np.float64, copy=False)
-        matrix_mask = valid & np.isfinite(local_i)
+        # Five-level confusion matrix. Never cast NaN to an integer: NumPy's
+        # float->int conversion turns NaN into the minimum int64 value, which
+        # then becomes an invalid array index. Only samples with both a valid
+        # global level and a recognized local level belong in this matrix.
+        local_valid = np.isfinite(local_levels)
+        matrix_mask = valid & local_valid
         if np.any(matrix_mask):
-            np.add.at(
-                self.confusion,
-                (global_i[matrix_mask].astype(int), local_i[matrix_mask].astype(int)),
-                1,
+            truth_i = global_level[matrix_mask].astype(np.int64, copy=False)
+            pred_i = local_levels[matrix_mask].astype(np.int64, copy=False)
+            in_range = (
+                (truth_i >= 0)
+                & (truth_i < self.confusion.shape[0])
+                & (pred_i >= 0)
+                & (pred_i < self.confusion.shape[1])
             )
+            if np.any(in_range):
+                np.add.at(
+                    self.confusion,
+                    (truth_i[in_range], pred_i[in_range]),
+                    1,
+                )
 
     def report(self) -> Dict[str, Any]:
         def with_metrics(counts: Dict[str, int]) -> Dict[str, Any]:
