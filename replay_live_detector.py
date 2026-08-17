@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-"""Replay historical magnetometer samples through the causal live detector.
+"""Causally replay historical magnetometer samples through LiveDetector.
 
-This is deliberately different from the batch validation benchmark: samples
-are fed to ``LiveDetector.update`` one at a time, in timestamp order, with no
-future observations available to the detector. Global Kp/Dst data is used only
-after local predictions have been produced, for scoring.
-
-Example:
-    python3 replay_live_detector.py \
-        --observatory VIC \
-        --start-date 2024-01-01 \
-        --end-date 2025-01-01 \
-        --config calibrated_vic.json
+The replay is deliberately independent of future observations.  It also
+normalizes chunk boundaries before scoring so overlapping upstream responses or
+duplicate timestamps cannot inflate the truth sample count.
 """
 from __future__ import annotations
 
@@ -29,11 +21,7 @@ from magnetometer.acquisition import fetch_intermagnet_iaga2002
 from magnetometer.config_strict import load_config
 from magnetometer.live import LiveDetector
 from magnetometer.parsing import parse_iaga2002_to_dataframe
-from validate_historical_magnetometer import (
-    align_global_indices,
-    binary_metrics,
-    fetch_global_indices,
-)
+from validate_historical_magnetometer import align_global_indices, binary_metrics, fetch_global_indices
 
 STORM_FLAGS = {"minor_storm", "major_storm", "severe_storm"}
 VALID_LEVELS = {"quiet", "unsettled", "active", *STORM_FLAGS}
@@ -51,6 +39,8 @@ class ReplayMetrics:
     invalid: int = 0
     errors: int = 0
     gaps: int = 0
+    duplicate_samples: int = 0
+    missing_samples: int = 0
     events_started: int = 0
     events_escalated: int = 0
     events_ended: int = 0
@@ -64,7 +54,6 @@ class ReplayMetrics:
 
 
 def _month_windows(start: pd.Timestamp, end: pd.Timestamp):
-    """Yield non-overlapping calendar-month windows clipped to [start, end)."""
     cursor = start
     while cursor < end:
         month_end = cursor.normalize() + pd.offsets.MonthEnd(0) + pd.Timedelta(days=1)
@@ -73,10 +62,7 @@ def _month_windows(start: pd.Timestamp, end: pd.Timestamp):
         cursor = nxt
 
 
-def _truth_events(
-    index: pd.DatetimeIndex, global_level: np.ndarray
-) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """Return contiguous global storm intervals."""
+def _truth_events(index: pd.DatetimeIndex, global_level: np.ndarray) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
     events: list[tuple[pd.Timestamp, pd.Timestamp]] = []
     start: Optional[pd.Timestamp] = None
     last: Optional[pd.Timestamp] = None
@@ -106,12 +92,6 @@ def _safe_float(value) -> float:
 
 
 def _event_type(result: dict) -> Optional[str]:
-    """Safely extract an event type from a detector result.
-
-    ``LiveDetector`` intentionally uses ``event=None`` when no lifecycle
-    transition occurs. Replay/scoring code must treat that as an ordinary
-    result rather than assuming every response contains a mapping.
-    """
     event = result.get("event")
     return event.get("type") if isinstance(event, dict) else None
 
@@ -130,8 +110,6 @@ def main() -> int:
     if end <= start:
         raise SystemExit("--end-date must be after --start-date")
 
-    # Strict loading also applies the calibrated values to the compatibility
-    # layer used by LiveDetector.from_pipeline_defaults().
     load_config(args.config)
     detector = LiveDetector.from_pipeline_defaults()
 
@@ -144,9 +122,8 @@ def main() -> int:
     )
 
     metrics = ReplayMetrics()
-    predictions: list[dict] = []
-    truth_index_parts: list[pd.DatetimeIndex] = []
-    truth_level_parts: list[np.ndarray] = []
+    predictions: dict[str, dict] = {}
+    truth_parts: list[pd.Series] = []
 
     for chunk_start, chunk_end in _month_windows(start, end):
         days = max(1, int((chunk_end - chunk_start).total_seconds() // 86400))
@@ -160,6 +137,7 @@ def main() -> int:
             )
             frame = parse_iaga2002_to_dataframe(text)
             frame = frame.loc[(frame.index >= chunk_start) & (frame.index < chunk_end)]
+            frame = frame[~frame.index.duplicated(keep="first")]
         except Exception as exc:
             print(f"  FAILED: {exc}")
             continue
@@ -168,8 +146,9 @@ def main() -> int:
             print("  FAILED: no parsed samples")
             continue
 
-        # F is the scalar total-field measurement used by the existing VIC
-        # historical pipeline. Each sample is processed immediately.
+        _, _, global_level = align_global_indices(frame.index, kp, dst)
+        truth_parts.append(pd.Series(global_level, index=frame.index, dtype=float))
+
         for timestamp, row in frame.iterrows():
             value = _safe_float(row.get("f_nt"))
             try:
@@ -202,40 +181,39 @@ def main() -> int:
             elif kind == "event_ended":
                 metrics.events_ended += 1
 
-            # Normalize absent events to None in the report. Do not assume the
-            # detector returns a mapping for every sample.
-            event = result.get("event")
-            if not isinstance(event, dict):
-                event = None
+            event = result.get("event") if isinstance(result.get("event"), dict) else None
+            record = {
+                "timestamp": timestamp.isoformat(),
+                "level": result.get("level"),
+                "status": status,
+                "amplitude_nt": result.get("amplitude_nt"),
+                "fast_amplitude_nt": result.get("fast_amplitude_nt"),
+                "fast_trigger": result.get("fast_trigger", False),
+                "event": event,
+            }
+            key = pd.Timestamp(timestamp, tz="UTC").isoformat()
+            if key in predictions:
+                metrics.duplicate_samples += 1
+            predictions[key] = record
 
-            predictions.append(
-                {
-                    "timestamp": timestamp.isoformat(),
-                    "level": result.get("level"),
-                    "status": status,
-                    "amplitude_nt": result.get("amplitude_nt"),
-                    "event": event,
-                }
-            )
-
-        # Keep the complete truth index separate; scoring is performed only
-        # after all local predictions have been generated.
-        _, _, global_level = align_global_indices(frame.index, kp, dst)
-        truth_index_parts.append(frame.index)
-        truth_level_parts.append(global_level)
-
-    if truth_index_parts:
-        truth_index = truth_index_parts[0].append(truth_index_parts[1:])
-        truth_level = np.concatenate(truth_level_parts)
+    if truth_parts:
+        truth_series = pd.concat(truth_parts).sort_index()
+        before = len(truth_series)
+        truth_series = truth_series[~truth_series.index.duplicated(keep="first")]
+        metrics.duplicate_samples += before - len(truth_series)
+        truth_index = truth_series.index
+        truth_level = truth_series.to_numpy(dtype=float)
     else:
         truth_index = pd.DatetimeIndex([], tz="UTC")
         truth_level = np.asarray([], dtype=float)
 
-    # Predictions are ordered by ingestion. Build arrays for exact timestamp
-    # alignment with the global truth series.
-    pred_by_ts = {p["timestamp"]: p for p in predictions}
+    expected_index = pd.date_range(start=start, end=end - pd.Timedelta(minutes=1), freq="min", tz="UTC")
+    expected_set = set(expected_index)
+    actual_set = set(truth_index)
+    metrics.missing_samples = len(expected_set - actual_set)
+
     flags = np.array(
-        [pred_by_ts.get(ts.isoformat(), {}).get("level", "invalid") for ts in truth_index],
+        [predictions.get(ts.isoformat(), {}).get("level", "invalid") for ts in truth_index],
         dtype=object,
     )
     valid = np.isfinite(truth_level)
@@ -251,48 +229,46 @@ def main() -> int:
 
     truth_events = _truth_events(truth_index, truth_level)
     metrics.truth_events = len(truth_events)
-
-    # Match a truth event to the first event_started at or after its beginning
-    # and before its end. This measures live detection latency without giving
-    # the detector access to future truth labels.
-    starts = [
+    starts = sorted(
         pd.Timestamp(p["timestamp"], tz="UTC")
-        for p in predictions
-        if _event_type(p) == "event_started"
-    ]
+        for p in predictions.values()
+        if isinstance(p.get("event"), dict) and p["event"].get("type") == "event_started"
+    )
+
+    # Match each truth event to one causal detector start. A start must occur
+    # after the truth onset and before the truth event ends; it is not allowed
+    # to match multiple truth events.
+    used: set[pd.Timestamp] = set()
     for event_start, event_end in truth_events:
-        candidates = [s for s in starts if event_start <= s <= event_end]
+        candidates = [s for s in starts if s not in used and event_start <= s <= event_end]
         if candidates:
-            first = min(candidates)
+            first = candidates[0]
+            used.add(first)
             metrics.truth_events_detected += 1
             metrics.latencies_min.append((first - event_start).total_seconds() / 60.0)
 
     sample_metrics = binary_metrics(metrics.tp, metrics.fp, metrics.fn, metrics.tn)
-    event_recall = (
-        metrics.truth_events_detected / metrics.truth_events
-        if metrics.truth_events
-        else float("nan")
-    )
+    event_recall = metrics.truth_events_detected / metrics.truth_events if metrics.truth_events else float("nan")
+    coverage = metrics.global_truth / len(expected_index) if len(expected_index) else float("nan")
     report = {
         "mode": "causal_live_replay",
         "observatory": args.observatory,
         "window": {"start": start.isoformat(), "end": end.isoformat()},
         "config": str(Path(args.config)),
         "samples": {
+            "expected": len(expected_index),
+            "unique_truth_samples": len(truth_index),
             "evaluated_by_detector": metrics.evaluated,
             "warming_up": metrics.warming_up,
             "invalid": metrics.invalid,
             "errors": metrics.errors,
             "gaps": metrics.gaps,
+            "duplicate_samples": metrics.duplicate_samples,
+            "missing_expected_samples": metrics.missing_samples,
             "global_truth_samples": metrics.global_truth,
+            "truth_coverage": coverage,
         },
-        "sample_metrics": {
-            "tp": metrics.tp,
-            "fp": metrics.fp,
-            "fn": metrics.fn,
-            "tn": metrics.tn,
-            **sample_metrics,
-        },
+        "sample_metrics": {"tp": metrics.tp, "fp": metrics.fp, "fn": metrics.fn, "tn": metrics.tn, **sample_metrics},
         "events": {
             "truth_events": metrics.truth_events,
             "truth_events_detected": metrics.truth_events_detected,
@@ -300,44 +276,32 @@ def main() -> int:
             "live_event_starts": metrics.events_started,
             "live_event_escalations": metrics.events_escalated,
             "live_event_ends": metrics.events_ended,
-            "detection_latency_min_median": (
-                float(np.median(metrics.latencies_min))
-                if metrics.latencies_min
-                else float("nan")
-            ),
-            "detection_latency_min_p95": (
-                float(np.percentile(metrics.latencies_min, 95))
-                if metrics.latencies_min
-                else float("nan")
-            ),
+            "detection_latency_min_median": float(np.median(metrics.latencies_min)) if metrics.latencies_min else float("nan"),
+            "detection_latency_min_p95": float(np.percentile(metrics.latencies_min, 95)) if metrics.latencies_min else float("nan"),
         },
     }
 
     Path(args.output).write_text(json.dumps(report, indent=2, allow_nan=True))
     print("\n=== Causal Live Replay ===")
-    print(f"Samples evaluated : {metrics.evaluated:,}")
-    print(f"Warm-up samples   : {metrics.warming_up:,}")
-    print(f"Invalid samples   : {metrics.invalid:,}")
-    print(f"Detector errors   : {metrics.errors:,}")
-    print(f"Global truth      : {metrics.global_truth:,}")
-    print(f"Precision         : {sample_metrics['precision']:.4%}")
-    print(f"Recall            : {sample_metrics['recall']:.4%}")
-    print(f"F1                : {sample_metrics['f1']:.4%}")
-    print(f"False alarm rate  : {sample_metrics['false_alarm_rate']:.4%}")
-    print(f"Truth events      : {metrics.truth_events}")
-    print(f"Events detected   : {metrics.truth_events_detected}")
-    print(f"Event recall      : {event_recall:.4%}" if metrics.truth_events else "Event recall      : n/a")
-    print(
-        f"Median latency    : {report['events']['detection_latency_min_median']:.2f} min"
-        if metrics.latencies_min
-        else "Median latency    : n/a"
-    )
-    print(
-        f"P95 latency       : {report['events']['detection_latency_min_p95']:.2f} min"
-        if metrics.latencies_min
-        else "P95 latency       : n/a"
-    )
-    print(f"Report written to : {args.output}")
+    print(f"Expected samples   : {len(expected_index):,}")
+    print(f"Unique truth       : {len(truth_index):,}")
+    print(f"Evaluated          : {metrics.evaluated:,}")
+    print(f"Warm-up            : {metrics.warming_up:,}")
+    print(f"Invalid            : {metrics.invalid:,}")
+    print(f"Duplicates         : {metrics.duplicate_samples:,}")
+    print(f"Missing            : {metrics.missing_samples:,}")
+    print(f"Detector errors    : {metrics.errors:,}")
+    print(f"Truth coverage     : {coverage:.4%}")
+    print(f"Precision          : {sample_metrics['precision']:.4%}")
+    print(f"Recall             : {sample_metrics['recall']:.4%}")
+    print(f"F1                 : {sample_metrics['f1']:.4%}")
+    print(f"False alarm rate   : {sample_metrics['false_alarm_rate']:.4%}")
+    print(f"Truth events       : {metrics.truth_events}")
+    print(f"Events detected    : {metrics.truth_events_detected}")
+    print(f"Event recall       : {event_recall:.4%}" if metrics.truth_events else "Event recall       : n/a")
+    print(f"Median latency     : {report['events']['detection_latency_min_median']:.2f} min" if metrics.latencies_min else "Median latency     : n/a")
+    print(f"P95 latency        : {report['events']['detection_latency_min_p95']:.2f} min" if metrics.latencies_min else "P95 latency        : n/a")
+    print(f"Report written to  : {args.output}")
     return 0
 
 
