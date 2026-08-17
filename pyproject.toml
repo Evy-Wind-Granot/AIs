@@ -27,7 +27,6 @@ magnetometer-pipeline = "magnetometer_demo:main_entry"
 magnetometer-calibrate = "calibrate_observatory:main"
 
 [tool.setuptools]
-# Flat single-module layout: the operational scripts are the deliverable.
 py-modules = [
     "magnetometer_demo",
     "calibrate_observatory",
@@ -35,3 +34,4 @@ py-modules = [
     "tune_thresholds",
     "validate_periods",
 ]
+packages = ["magnetometer"]
