@@ -29,9 +29,14 @@ from magnetometer.acquisition import fetch_intermagnet_iaga2002
 from magnetometer.config_strict import load_config
 from magnetometer.live import LiveDetector
 from magnetometer.parsing import parse_iaga2002_to_dataframe
-from validate_historical_magnetometer import align_global_indices, binary_metrics, fetch_global_indices
+from validate_historical_magnetometer import (
+    align_global_indices,
+    binary_metrics,
+    fetch_global_indices,
+)
 
 STORM_FLAGS = {"minor_storm", "major_storm", "severe_storm"}
+VALID_LEVELS = {"quiet", "unsettled", "active", *STORM_FLAGS}
 
 
 @dataclass
@@ -44,13 +49,14 @@ class ReplayMetrics:
     global_truth: int = 0
     warming_up: int = 0
     invalid: int = 0
+    errors: int = 0
     gaps: int = 0
     events_started: int = 0
     events_escalated: int = 0
     events_ended: int = 0
     truth_events: int = 0
     truth_events_detected: int = 0
-    latencies_min: list[float] = None
+    latencies_min: list[float] | None = None
 
     def __post_init__(self) -> None:
         if self.latencies_min is None:
@@ -58,17 +64,18 @@ class ReplayMetrics:
 
 
 def _month_windows(start: pd.Timestamp, end: pd.Timestamp):
+    """Yield non-overlapping calendar-month windows clipped to [start, end)."""
     cursor = start
     while cursor < end:
-        nxt = min(cursor + pd.offsets.MonthBegin(1), end)
-        # MonthBegin(1) from a non-month-start advances to the next month. For
-        # arbitrary starts we instead use the first day of the following month.
-        nxt = min((cursor.normalize() + pd.offsets.MonthEnd(0) + pd.Timedelta(days=1)), end)
+        month_end = cursor.normalize() + pd.offsets.MonthEnd(0) + pd.Timedelta(days=1)
+        nxt = min(month_end, end)
         yield cursor, nxt
         cursor = nxt
 
 
-def _truth_events(index: pd.DatetimeIndex, global_level: np.ndarray) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+def _truth_events(
+    index: pd.DatetimeIndex, global_level: np.ndarray
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
     """Return contiguous global storm intervals."""
     events: list[tuple[pd.Timestamp, pd.Timestamp]] = []
     start: Optional[pd.Timestamp] = None
@@ -98,6 +105,17 @@ def _safe_float(value) -> float:
         return float("nan")
 
 
+def _event_type(result: dict) -> Optional[str]:
+    """Safely extract an event type from a detector result.
+
+    ``LiveDetector`` intentionally uses ``event=None`` when no lifecycle
+    transition occurs. Replay/scoring code must treat that as an ordinary
+    result rather than assuming every response contains a mapping.
+    """
+    event = result.get("event")
+    return event.get("type") if isinstance(event, dict) else None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--observatory", required=True)
@@ -119,7 +137,11 @@ def main() -> int:
 
     print(f"Fetching global validation indices for {start.date()} -> {end.date()} ...")
     kp, dst = fetch_global_indices(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-    print(f"Global sources: Kp={'available' if kp is not None else 'unavailable'}, Dst={'available' if dst is not None else 'unavailable'}")
+    print(
+        "Global sources: "
+        f"Kp={'available' if kp is not None else 'unavailable'}, "
+        f"Dst={'available' if dst is not None else 'unavailable'}"
+    )
 
     metrics = ReplayMetrics()
     predictions: list[dict] = []
@@ -153,7 +175,12 @@ def main() -> int:
             try:
                 result = detector.update(timestamp, value)
             except Exception as exc:
-                result = {"status": "error", "error": str(exc), "timestamp": timestamp.isoformat()}
+                result = {
+                    "status": "error",
+                    "error": str(exc),
+                    "timestamp": timestamp.isoformat(),
+                    "event": None,
+                }
 
             status = result.get("status")
             if status == "warming_up":
@@ -162,30 +189,38 @@ def main() -> int:
                 metrics.invalid += 1
             elif status == "ok":
                 metrics.evaluated += 1
+            elif status == "error":
+                metrics.errors += 1
             if result.get("gap"):
                 metrics.gaps += 1
 
-            event = result.get("event")
-            if event:
-                kind = event.get("type")
-                if kind == "event_started":
-                    metrics.events_started += 1
-                elif kind == "event_escalated":
-                    metrics.events_escalated += 1
-                elif kind == "event_ended":
-                    metrics.events_ended += 1
+            kind = _event_type(result)
+            if kind == "event_started":
+                metrics.events_started += 1
+            elif kind == "event_escalated":
+                metrics.events_escalated += 1
+            elif kind == "event_ended":
+                metrics.events_ended += 1
 
-            predictions.append({
-                "timestamp": timestamp.isoformat(),
-                "level": result.get("level"),
-                "status": status,
-                "amplitude_nt": result.get("amplitude_nt"),
-                "event": event,
-            })
+            # Normalize absent events to None in the report. Do not assume the
+            # detector returns a mapping for every sample.
+            event = result.get("event")
+            if not isinstance(event, dict):
+                event = None
+
+            predictions.append(
+                {
+                    "timestamp": timestamp.isoformat(),
+                    "level": result.get("level"),
+                    "status": status,
+                    "amplitude_nt": result.get("amplitude_nt"),
+                    "event": event,
+                }
+            )
 
         # Keep the complete truth index separate; scoring is performed only
         # after all local predictions have been generated.
-        kp_aligned, dst_aligned, global_level = align_global_indices(frame.index, kp, dst)
+        _, _, global_level = align_global_indices(frame.index, kp, dst)
         truth_index_parts.append(frame.index)
         truth_level_parts.append(global_level)
 
@@ -199,11 +234,14 @@ def main() -> int:
     # Predictions are ordered by ingestion. Build arrays for exact timestamp
     # alignment with the global truth series.
     pred_by_ts = {p["timestamp"]: p for p in predictions}
-    flags = np.array([pred_by_ts.get(ts.isoformat(), {}).get("level", "invalid") for ts in truth_index], dtype=object)
+    flags = np.array(
+        [pred_by_ts.get(ts.isoformat(), {}).get("level", "invalid") for ts in truth_index],
+        dtype=object,
+    )
     valid = np.isfinite(truth_level)
     predicted_storm = np.isin(flags, list(STORM_FLAGS))
     truth_storm = valid & (truth_level >= 3)
-    mask = valid & np.isin(flags, ["quiet", "unsettled", "active", *STORM_FLAGS])
+    mask = valid & np.isin(flags, list(VALID_LEVELS))
 
     metrics.tp = int(np.sum(predicted_storm & truth_storm & mask))
     metrics.fn = int(np.sum(~predicted_storm & truth_storm & mask))
@@ -220,7 +258,7 @@ def main() -> int:
     starts = [
         pd.Timestamp(p["timestamp"], tz="UTC")
         for p in predictions
-        if p.get("event", {}).get("type") == "event_started"
+        if _event_type(p) == "event_started"
     ]
     for event_start, event_end in truth_events:
         candidates = [s for s in starts if event_start <= s <= event_end]
@@ -230,6 +268,11 @@ def main() -> int:
             metrics.latencies_min.append((first - event_start).total_seconds() / 60.0)
 
     sample_metrics = binary_metrics(metrics.tp, metrics.fp, metrics.fn, metrics.tn)
+    event_recall = (
+        metrics.truth_events_detected / metrics.truth_events
+        if metrics.truth_events
+        else float("nan")
+    )
     report = {
         "mode": "causal_live_replay",
         "observatory": args.observatory,
@@ -239,19 +282,34 @@ def main() -> int:
             "evaluated_by_detector": metrics.evaluated,
             "warming_up": metrics.warming_up,
             "invalid": metrics.invalid,
+            "errors": metrics.errors,
             "gaps": metrics.gaps,
             "global_truth_samples": metrics.global_truth,
         },
-        "sample_metrics": {"tp": metrics.tp, "fp": metrics.fp, "fn": metrics.fn, "tn": metrics.tn, **sample_metrics},
+        "sample_metrics": {
+            "tp": metrics.tp,
+            "fp": metrics.fp,
+            "fn": metrics.fn,
+            "tn": metrics.tn,
+            **sample_metrics,
+        },
         "events": {
             "truth_events": metrics.truth_events,
             "truth_events_detected": metrics.truth_events_detected,
-            "truth_event_detection_rate": metrics.truth_events_detected / metrics.truth_events if metrics.truth_events else float("nan"),
+            "truth_event_detection_rate": event_recall,
             "live_event_starts": metrics.events_started,
             "live_event_escalations": metrics.events_escalated,
             "live_event_ends": metrics.events_ended,
-            "detection_latency_min_median": float(np.median(metrics.latencies_min)) if metrics.latencies_min else float("nan"),
-            "detection_latency_min_p95": float(np.percentile(metrics.latencies_min, 95)) if metrics.latencies_min else float("nan"),
+            "detection_latency_min_median": (
+                float(np.median(metrics.latencies_min))
+                if metrics.latencies_min
+                else float("nan")
+            ),
+            "detection_latency_min_p95": (
+                float(np.percentile(metrics.latencies_min, 95))
+                if metrics.latencies_min
+                else float("nan")
+            ),
         },
     }
 
@@ -259,6 +317,8 @@ def main() -> int:
     print("\n=== Causal Live Replay ===")
     print(f"Samples evaluated : {metrics.evaluated:,}")
     print(f"Warm-up samples   : {metrics.warming_up:,}")
+    print(f"Invalid samples   : {metrics.invalid:,}")
+    print(f"Detector errors   : {metrics.errors:,}")
     print(f"Global truth      : {metrics.global_truth:,}")
     print(f"Precision         : {sample_metrics['precision']:.4%}")
     print(f"Recall            : {sample_metrics['recall']:.4%}")
@@ -266,9 +326,17 @@ def main() -> int:
     print(f"False alarm rate  : {sample_metrics['false_alarm_rate']:.4%}")
     print(f"Truth events      : {metrics.truth_events}")
     print(f"Events detected   : {metrics.truth_events_detected}")
-    print(f"Event recall      : {metrics.truth_events_detected / metrics.truth_events:.4%}" if metrics.truth_events else "Event recall      : n/a")
-    print(f"Median latency    : {report['events']['detection_latency_min_median']:.2f} min" if metrics.latencies_min else "Median latency    : n/a")
-    print(f"P95 latency       : {report['events']['detection_latency_min_p95']:.2f} min" if metrics.latencies_min else "P95 latency       : n/a")
+    print(f"Event recall      : {event_recall:.4%}" if metrics.truth_events else "Event recall      : n/a")
+    print(
+        f"Median latency    : {report['events']['detection_latency_min_median']:.2f} min"
+        if metrics.latencies_min
+        else "Median latency    : n/a"
+    )
+    print(
+        f"P95 latency       : {report['events']['detection_latency_min_p95']:.2f} min"
+        if metrics.latencies_min
+        else "P95 latency       : n/a"
+    )
     print(f"Report written to : {args.output}")
     return 0
 
