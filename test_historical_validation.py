@@ -5,8 +5,13 @@ from __future__ import annotations
 import unittest
 
 import numpy as np
+import pandas as pd
 
-from validate_historical_magnetometer import binary_metrics, global_levels_from_indices
+from validate_historical_magnetometer import (
+    Aggregator,
+    binary_metrics,
+    global_levels_from_indices,
+)
 
 
 class HistoricalValidationTests(unittest.TestCase):
@@ -33,6 +38,32 @@ class HistoricalValidationTests(unittest.TestCase):
         np.testing.assert_array_equal(
             global_levels_from_indices(kp, dst),
             np.array([0.0, 2.0, 3.0, 4.0, 1.0]),
+        )
+
+    def test_confusion_matrix_ignores_nan_local_levels(self) -> None:
+        aggregate = Aggregator()
+        index = pd.date_range(
+            "2024-01-01", periods=4, freq="min", tz="UTC"
+        )
+        flags = np.array(["quiet", "minor_storm", None, "severe_storm"], dtype=object)
+        kp = np.array([1.0, 6.0, 7.0, 8.0])
+        dst = np.full(4, np.nan)
+        global_level = global_levels_from_indices(kp, dst)
+
+        aggregate.add("VIC", index, flags, kp, dst, global_level)
+
+        np.testing.assert_array_equal(
+            aggregate.confusion,
+            np.array(
+                [
+                    [1, 0, 0, 0, 0],
+                    [0, 0, 0, 0, 0],
+                    [0, 0, 0, 0, 0],
+                    [0, 0, 0, 1, 0],
+                    [0, 0, 0, 0, 1],
+                ],
+                dtype=np.int64,
+            ),
         )
 
 
