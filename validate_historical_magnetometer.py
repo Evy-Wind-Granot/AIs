@@ -6,6 +6,10 @@ compares local activity flags with globally derived Kp/Dst severity labels.
 Results are streamed so multi-year one-minute data never has to reside in memory
 at once. Failed data-quality chunks are excluded from scored samples and are
 reported explicitly rather than silently disappearing from the denominator.
+
+Important: global indices are used only for scoring. They are NOT passed into
+run_analysis, so the local baseline/classifier cannot see the truth labels it is
+being evaluated against.
 """
 from __future__ import annotations
 
@@ -281,13 +285,23 @@ def run_observatory(observatory: str, start: pd.Timestamp, end: pd.Timestamp, ch
             if df is None or df.empty or column not in df:
                 raise RuntimeError("No usable magnetometer data returned")
             full_index = pd.date_range(start=df.index.min(), periods=len(df), freq=pd.Timedelta(seconds=60), tz="UTC")
-            analysis_index = full_index[full_index >= current]
             md.setup_logging(level=logging.WARNING)
-            result = md.run_analysis(df[column].to_numpy(), 60, label=f"{observatory} {current.date()}", start_time=pd.to_datetime(df.index.min()).to_pydatetime(), analysis_start_time=current.to_pydatetime(), dst_series=dst, kp_series=kp, observatory=observatory)
+            # IMPORTANT: do not pass Kp/Dst into the production pipeline during
+            # validation. They are reserved for independent truth scoring below.
+            result = md.run_analysis(
+                df[column].to_numpy(),
+                60,
+                label=f"{observatory} {current.date()}",
+                start_time=pd.to_datetime(df.index.min()).to_pydatetime(),
+                analysis_start_time=current.to_pydatetime(),
+                dst_series=None,
+                kp_series=None,
+                observatory=observatory,
+            )
             if result.get("status") != "ok":
                 raise RuntimeError(f"pipeline status={result.get('status')}")
             flags = np.asarray(result["flags"], dtype=object)
-            analysis_index = analysis_index[: len(flags)]
+            analysis_index = full_index[full_index >= current][: len(flags)]
             if len(analysis_index) != len(flags):
                 raise RuntimeError("Could not reconstruct the pipeline analysis time grid")
             kp_aligned, dst_aligned, global_level = align_global_indices(analysis_index, kp, dst)
@@ -318,6 +332,7 @@ def main() -> int:
     ap.add_argument("--warmup-days", type=float, default=3.0)
     ap.add_argument("--column", default="x_nt")
     ap.add_argument("--output", default="historical_validation_report.json")
+    ap.add_argument("--config", default=None, help="Optional JSON/YAML production config to load before validation")
     args = ap.parse_args()
     start = pd.to_datetime(args.start_date, utc=True)
     end = pd.to_datetime(args.end_date, utc=True)
@@ -328,6 +343,8 @@ def main() -> int:
     observatories = [x.strip().upper() for x in args.observatories.split(",") if x.strip()]
     if not observatories:
         ap.error("At least one observatory is required")
+    if args.config:
+        md.load_config(args.config)
     md.setup_logging(level=logging.WARNING)
     print(f"Fetching global validation indices for {start.date()} -> {end.date()} ...")
     kp, dst = fetch_global_indices(args.start_date, (end - pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
@@ -335,7 +352,7 @@ def main() -> int:
     aggregate = Aggregator(requested_samples=len(observatories) * int((end - start).total_seconds() // 60))
     for observatory in observatories:
         run_observatory(observatory, start, end, args.chunk_days, args.warmup_days, kp, dst, aggregate, args.column)
-    report = {"benchmark": {"observatories": observatories, "start_date": args.start_date, "end_date_exclusive": args.end_date, "chunk_days": args.chunk_days, "warmup_days": args.warmup_days, "column": args.column, "definition": "sample-level binary storm validation; global storm = severity >= 3; local storm = minor/major/severe; event = contiguous global storm samples at one-minute cadence"}, "results": aggregate.report()}
+    report = {"benchmark": {"observatories": observatories, "start_date": args.start_date, "end_date_exclusive": args.end_date, "chunk_days": args.chunk_days, "warmup_days": args.warmup_days, "column": args.column, "config": args.config, "validation_mode": "local_only_no_global_indices", "definition": "sample-level binary storm validation; global storm = severity >= 3; local storm = minor/major/severe; event = contiguous global storm samples at one-minute cadence"}, "results": aggregate.report()}
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(_json_safe(report), indent=2) + "\n")
@@ -360,6 +377,7 @@ def main() -> int:
         print(f"  {row}")
     print(f"\nReport written to: {output}")
     return 0 if coverage["chunks_failed"] == 0 else 2
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
