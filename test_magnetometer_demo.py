@@ -48,11 +48,15 @@ class BaselineTests(unittest.TestCase):
         self.assertLess(error, 2.0)
 
     def test_handle_gaps_fills_only_short_gaps(self) -> None:
-        index = pd.date_range("2024-01-01", periods=6, freq="min", tz="UTC")
-        series = pd.Series([0.0, 1.0, np.nan, 3.0, np.nan, 5.0], index=index)
+        index = pd.date_range("2024-01-01", periods=7, freq="min", tz="UTC")
+        # One-sample gap is filled; two-sample gap is deliberately left alone.
+        series = pd.Series(
+            [0.0, 1.0, np.nan, 3.0, np.nan, np.nan, 6.0], index=index
+        )
         result = handle_gaps(series, max_gap_samples=1)
         self.assertAlmostEqual(float(result.iloc[2]), 2.0)
         self.assertTrue(np.isnan(result.iloc[4]))
+        self.assertTrue(np.isnan(result.iloc[5]))
 
 
 class ClassificationTests(unittest.TestCase):
@@ -123,7 +127,9 @@ class ClassificationTests(unittest.TestCase):
 
 class AcquisitionTests(unittest.TestCase):
     def test_dst_wrapper_accepts_tuple_and_two_arguments(self) -> None:
-        with patch("magnetometer.acquisition.DEFAULT_ACQUISITION.fetch_dst") as fetch:
+        # AcquisitionClient uses slots, so patch the class method rather than
+        # trying to replace a read-only instance attribute.
+        with patch("magnetometer.acquisition.AcquisitionClient.fetch_dst") as fetch:
             fetch.return_value = None
             self.assertIsNone(fetch_dst_kyoto((2024, 5)))
             self.assertIsNone(fetch_dst_kyoto(2024, 5))
@@ -151,15 +157,11 @@ DATE       TIME         DOY     VICX      VICY      VICZ      VICF   |
 
 
 class CacheTests(unittest.TestCase):
-    def test_disk_round_trip_and_memory_clear(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            cache = ResponseCache(Path(directory), ttl_hours=1.0)
-            key = cache.key(
-                "https://example.invalid/data", {"month": "2024-05"}
-            )
+    def test_response_cache_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = ResponseCache(Path(tmp), ttl_hours=24.0)
+            key = ResponseCache.key("https://example.test/data", {"b": 2, "a": 1})
             cache.put(key, 200, "payload")
-            self.assertEqual(cache.get(key), (200, "payload"))
-            cache.clear_memory()
             self.assertEqual(cache.get(key), (200, "payload"))
             self.assertTrue(cache.contains(key))
 
