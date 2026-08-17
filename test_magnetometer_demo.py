@@ -9,13 +9,22 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from magnetometer.baseline import build_design_matrix, handle_gaps, robust_harmonic_baseline
+from magnetometer.baseline import (
+    build_design_matrix,
+    handle_gaps,
+    robust_harmonic_baseline,
+)
 from magnetometer.cache import ResponseCache
-from magnetometer.classification import cross_validate_flags, disturbance_amplitude, flag_activity
+from magnetometer.classification import (
+    cross_validate_flags,
+    disturbance_amplitude,
+    flag_activity,
+)
 from magnetometer.parsing import parse_iaga2002_to_dataframe
 
 
@@ -33,7 +42,8 @@ class BaselineTests(unittest.TestCase):
         observed[300:305] += 500.0
         baseline, coeffs = robust_harmonic_baseline(observed, cadence_s=60.0)
         self.assertEqual(len(coeffs), 9)
-        self.assertLess(float(np.sqrt(np.mean((baseline - expected) ** 2))), 2.0)
+        error = float(np.sqrt(np.mean((baseline - expected) ** 2)))
+        self.assertLess(error, 2.0)
 
     def test_handle_gaps_fills_only_short_gaps(self) -> None:
         index = pd.date_range("2024-01-01", periods=6, freq="min", tz="UTC")
@@ -44,7 +54,7 @@ class BaselineTests(unittest.TestCase):
 
 
 class ClassificationTests(unittest.TestCase):
-    def _kwargs(self) -> dict[str, object]:
+    def _kwargs(self) -> dict[str, Any]:
         return {
             "window_min": 1.0,
             "mode": "instant",
@@ -63,43 +73,57 @@ class ClassificationTests(unittest.TestCase):
         residual = np.array([0.0, 10.0, -20.0, 30.0])
         for mode in ("instant", "range", "hybrid", "max"):
             amplitude = disturbance_amplitude(
-                residual, 60.0, window_min=1.0, mode=mode, centered=False
+                residual,
+                60.0,
+                window_min=1.0,
+                mode=mode,
+                centered=False,
             )
             self.assertEqual(amplitude.shape, residual.shape)
             self.assertTrue(np.all(np.isfinite(amplitude)))
 
     def test_activity_tiers_and_invalid_values(self) -> None:
-        residual = np.array([0.0, 15.0, 25.0, 75.0, 150.0, 250.0, 4000.0, np.nan])
+        residual = np.array(
+            [0.0, 15.0, 25.0, 75.0, 150.0, 250.0, 4000.0, np.nan]
+        )
         flags = flag_activity(residual, cadence_s=60.0, **self._kwargs())
-        self.assertEqual(flags.tolist(), [
-            "quiet",
-            "unsettled",
-            "active",
-            "minor_storm",
-            "major_storm",
-            "severe_storm",
-            "invalid",
-            "invalid",
-        ])
+        self.assertEqual(
+            flags.tolist(),
+            [
+                "quiet",
+                "unsettled",
+                "active",
+                "minor_storm",
+                "major_storm",
+                "severe_storm",
+                "invalid",
+                "invalid",
+            ],
+        )
 
     def test_cross_validation_marks_global_events(self) -> None:
-        local = np.array(["quiet", "quiet", "major_storm", "severe_storm"], dtype=object)
+        local = np.array(
+            ["quiet", "quiet", "major_storm", "severe_storm"], dtype=object
+        )
         dst = np.array([-80.0, -20.0, 0.0, 0.0])
         kp = np.array([2.0, 5.0, 2.0, 7.0])
         validation = cross_validate_flags(local, dst, kp)
-        self.assertEqual(validation.tolist(), [
-            "missed_global_event",
-            "under_reacting",
-            "unconfirmed_storm",
-            "ok",
-        ])
+        self.assertEqual(
+            validation.tolist(),
+            [
+                "missed_global_event",
+                "under_reacting",
+                "unconfirmed_storm",
+                "ok",
+            ],
+        )
 
 
 class ParsingTests(unittest.TestCase):
     SAMPLE = """# IAGA-2002
-DATE TIME DOY XOBS YOBS ZOBS FOBS
-2024-05-08 00:00:00 129 123.4 456.7 789.0 910.1
-2024-05-08 00:01:00 129 99999.0 450.0 780.0 905.0
+DATE       TIME         DOY     VICX      VICY      VICZ      VICF   |
+2024-05-08 00:00:00.000 129     123.4     456.7     789.0     910.1
+2024-05-08 00:01:00.000 129     99999.0   450.0     780.0     905.0
 """
 
     def test_iaga_parser_normalizes_schema_and_sentinels(self) -> None:
@@ -118,7 +142,9 @@ class CacheTests(unittest.TestCase):
     def test_disk_round_trip_and_memory_clear(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cache = ResponseCache(Path(directory), ttl_hours=1.0)
-            key = cache.key("https://example.invalid/data", {"month": "2024-05"})
+            key = cache.key(
+                "https://example.invalid/data", {"month": "2024-05"}
+            )
             cache.put(key, 200, "payload")
             self.assertEqual(cache.get(key), (200, "payload"))
             cache.clear_memory()
