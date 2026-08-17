@@ -18,6 +18,14 @@ from .baseline import build_design_matrix, handle_gaps, robust_harmonic_baseline
 # numerical work now executes in the focused classification module.
 from . import classification as _classification
 
+# Strict config loader: rejects unknown keys and accepts flat FLAG_* JSON.
+from .config_strict import load_config as _strict_load_config
+
+
+def load_config(path: str):
+    """Load YAML/JSON config; unknown keys are fatal (EXIT_CONFIG_INVALID)."""
+    return _strict_load_config(path)
+
 
 def disturbance_amplitude(residual, cadence_s):
     return _classification.disturbance_amplitude(
@@ -57,5 +65,6 @@ def cross_validate_flags(local_flags, dst_vals, kp_vals):
 _legacy.disturbance_amplitude = disturbance_amplitude
 _legacy.flag_activity = flag_activity
 _legacy.cross_validate_flags = cross_validate_flags
+_legacy.load_config = load_config
 
 __all__ = [name for name in globals() if not name.startswith("_")]
