@@ -7,11 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from validate_historical_magnetometer import (
-    Aggregator,
-    binary_metrics,
-    global_levels_from_indices,
-)
+from validate_historical_magnetometer import Aggregator, binary_metrics, global_levels_from_indices
 
 
 class HistoricalValidationTests(unittest.TestCase):
@@ -42,29 +38,43 @@ class HistoricalValidationTests(unittest.TestCase):
 
     def test_confusion_matrix_ignores_nan_local_levels(self) -> None:
         aggregate = Aggregator()
-        index = pd.date_range(
-            "2024-01-01", periods=4, freq="min", tz="UTC"
-        )
+        index = pd.date_range("2024-01-01", periods=4, freq="min", tz="UTC")
         flags = np.array(["quiet", "minor_storm", None, "severe_storm"], dtype=object)
         kp = np.array([1.0, 6.0, 7.0, 8.0])
         dst = np.full(4, np.nan)
-        global_level = global_levels_from_indices(kp, dst)
-
-        aggregate.add("VIC", index, flags, kp, dst, global_level)
-
+        aggregate.add("VIC", index, flags, kp, dst, global_levels_from_indices(kp, dst))
         np.testing.assert_array_equal(
             aggregate.confusion,
-            np.array(
-                [
-                    [1, 0, 0, 0, 0],
-                    [0, 0, 0, 0, 0],
-                    [0, 0, 0, 0, 0],
-                    [0, 0, 0, 1, 0],
-                    [0, 0, 0, 0, 1],
-                ],
-                dtype=np.int64,
-            ),
+            np.array([[1, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 1, 0], [0, 0, 0, 0, 1]], dtype=np.int64),
         )
+
+    def test_coverage_reports_excluded_failed_chunks(self) -> None:
+        aggregate = Aggregator(requested_samples=10)
+        index = pd.date_range("2024-01-01", periods=4, freq="min", tz="UTC")
+        flags = np.array(["quiet", "quiet", "minor_storm", "quiet"], dtype=object)
+        kp = np.array([1.0, 1.0, 6.0, 1.0])
+        dst = np.full(4, np.nan)
+        aggregate.add("VIC", index, flags, kp, dst, global_levels_from_indices(kp, dst))
+        aggregate.chunks_ok = 1
+        aggregate.chunks_failed = 1
+        coverage = aggregate.report()["coverage"]
+        self.assertEqual(coverage["requested_samples"], 10)
+        self.assertEqual(coverage["evaluated_samples"], 4)
+        self.assertEqual(coverage["excluded_samples"], 6)
+        self.assertAlmostEqual(coverage["evaluation_coverage"], 0.4)
+
+    def test_event_level_detection_tracks_contiguous_global_storm(self) -> None:
+        aggregate = Aggregator()
+        index = pd.date_range("2024-01-01", periods=7, freq="min", tz="UTC")
+        flags = np.array(["quiet", "minor_storm", "major_storm", "quiet", "quiet", "severe_storm", "quiet"], dtype=object)
+        kp = np.array([1.0, 6.0, 7.0, 1.0, 1.0, 8.0, 1.0])
+        dst = np.full(7, np.nan)
+        aggregate.add("VIC", index, flags, kp, dst, global_levels_from_indices(kp, dst))
+        events = aggregate.report()["event_level_performance"]
+        self.assertEqual(events["global_events"], 2)
+        self.assertEqual(events["events_detected"], 2)
+        self.assertEqual(events["events_missed"], 0)
+        self.assertEqual(events["severe_global_events"], 1)
 
 
 if __name__ == "__main__":
