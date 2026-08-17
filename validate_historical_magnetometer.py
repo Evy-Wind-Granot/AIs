@@ -313,6 +313,21 @@ def run_observatory(observatory: str, start: pd.Timestamp, end: pd.Timestamp, ch
         current = chunk_end
 
 
+def current_classification_settings() -> Dict[str, Any]:
+    """Snapshot of the classification knobs the pipeline is actually using."""
+    return {
+        "FLAG_AMPLITUDE_WINDOW_MIN": float(md.FLAG_AMPLITUDE_WINDOW_MIN),
+        "FLAG_AMPLITUDE_MODE": str(md.FLAG_AMPLITUDE_MODE),
+        "FLAG_AMPLITUDE_CENTERED": bool(md.FLAG_AMPLITUDE_CENTERED),
+        "FLAG_THRESHOLD_UNSETTLED_NT": float(md.FLAG_THRESHOLD_UNSETTLED_NT),
+        "FLAG_THRESHOLD_ACTIVE_NT": float(md.FLAG_THRESHOLD_ACTIVE_NT),
+        "FLAG_THRESHOLD_MINOR_STORM_NT": float(md.FLAG_THRESHOLD_MINOR_STORM_NT),
+        "FLAG_THRESHOLD_MAJOR_STORM_NT": float(md.FLAG_THRESHOLD_MAJOR_STORM_NT),
+        "FLAG_THRESHOLD_SEVERE_STORM_NT": float(md.FLAG_THRESHOLD_SEVERE_STORM_NT),
+        "FLAG_THRESHOLD_ANOMALY_JUMP_NT": float(md.FLAG_THRESHOLD_ANOMALY_JUMP_NT),
+    }
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _json_safe(v) for k, v in value.items()}
@@ -346,13 +361,31 @@ def main() -> int:
     if args.config:
         md.load_config(args.config)
     md.setup_logging(level=logging.WARNING)
+    loaded_settings = current_classification_settings()
+    print("Classification settings in effect:")
+    for k, v in loaded_settings.items():
+        print(f"  {k}: {v}")
     print(f"Fetching global validation indices for {start.date()} -> {end.date()} ...")
     kp, dst = fetch_global_indices(args.start_date, (end - pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
     print(f"Global sources: Kp={'available' if kp is not None and not kp.empty else 'unavailable'}, Dst={'available' if dst is not None and not dst.empty else 'unavailable'}")
     aggregate = Aggregator(requested_samples=len(observatories) * int((end - start).total_seconds() // 60))
     for observatory in observatories:
         run_observatory(observatory, start, end, args.chunk_days, args.warmup_days, kp, dst, aggregate, args.column)
-    report = {"benchmark": {"observatories": observatories, "start_date": args.start_date, "end_date_exclusive": args.end_date, "chunk_days": args.chunk_days, "warmup_days": args.warmup_days, "column": args.column, "config": args.config, "validation_mode": "local_only_no_global_indices", "definition": "sample-level binary storm validation; global storm = severity >= 3; local storm = minor/major/severe; event = contiguous global storm samples at one-minute cadence"}, "results": aggregate.report()}
+    report = {
+        "benchmark": {
+            "observatories": observatories,
+            "start_date": args.start_date,
+            "end_date_exclusive": args.end_date,
+            "chunk_days": args.chunk_days,
+            "warmup_days": args.warmup_days,
+            "column": args.column,
+            "config": args.config,
+            "loaded_classification_settings": loaded_settings,
+            "validation_mode": "local_only_no_global_indices",
+            "definition": "sample-level binary storm validation; global storm = severity >= 3; local storm = minor/major/severe; event = contiguous global storm samples at one-minute cadence",
+        },
+        "results": aggregate.report(),
+    }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(_json_safe(report), indent=2) + "\n")

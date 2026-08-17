@@ -6,9 +6,10 @@ pipeline. Global indices are used only after local processing, as independent
 truth labels. This prevents the baseline fit from seeing the labels it is being
 scored against.
 
-The selected settings are written to JSON and, when a holdout window is
-provided, evaluated on that unseen period in the same process. Do not use the
-holdout interval for calibration.
+The selected settings are written to JSON in the nested thresholds schema that
+load_config understands, and, when a holdout window is provided, evaluated on
+that unseen period in the same process. Do not use the holdout interval for
+calibration.
 """
 from __future__ import annotations
 
@@ -178,6 +179,18 @@ def collect_training_data(
     return np.concatenate(residual_parts), np.concatenate(truth_parts), stats
 
 
+def calibrated_config_from_best(best: Dict[str, Any]) -> Dict[str, Any]:
+    """Nested thresholds block that load_config / _CONFIG_MAPPING understands."""
+    return {
+        "thresholds": {
+            "amplitude_window_min": best["window_min"],
+            "amplitude_mode": best["mode"],
+            "amplitude_centered": False,
+            "minor_storm": best["threshold_nt"],
+        }
+    }
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _json_safe(v) for k, v in value.items()}
@@ -244,12 +257,7 @@ def main() -> int:
         for mode in MODES
     }
     best = choose_best(amplitudes, truth, args.max_false_alarm_rate)
-    config = {
-        "FLAG_AMPLITUDE_WINDOW_MIN": best["window_min"],
-        "FLAG_AMPLITUDE_MODE": best["mode"],
-        "FLAG_AMPLITUDE_CENTERED": False,
-        "FLAG_THRESHOLD_MINOR_STORM_NT": best["threshold_nt"],
-    }
+    config = calibrated_config_from_best(best)
     Path(args.output_config).write_text(json.dumps(config, indent=2) + "\n")
 
     report: Dict[str, Any] = {
@@ -299,12 +307,21 @@ def main() -> int:
         )
         holdout_results = aggregate.report()
         report["holdout"] = holdout_results
+        report["loaded_classification_settings"] = {
+            "FLAG_AMPLITUDE_WINDOW_MIN": float(md.FLAG_AMPLITUDE_WINDOW_MIN),
+            "FLAG_AMPLITUDE_MODE": str(md.FLAG_AMPLITUDE_MODE),
+            "FLAG_AMPLITUDE_CENTERED": bool(md.FLAG_AMPLITUDE_CENTERED),
+            "FLAG_THRESHOLD_MINOR_STORM_NT": float(md.FLAG_THRESHOLD_MINOR_STORM_NT),
+        }
         overall = holdout_results["overall"]
         coverage = holdout_results["coverage"]
         print("\n=== Unseen Holdout ===")
         print(f"Window: {args.holdout_start} -> {args.holdout_end} (exclusive)")
         print(f"Chunks: {coverage['chunks_ok']} OK / {coverage['chunks_failed']} failed")
         print(f"Evaluation coverage: {coverage['evaluation_coverage']:.2%}")
+        print("Loaded classification settings:")
+        for k, v in report["loaded_classification_settings"].items():
+            print(f"  {k}: {v}")
         for key in ("detection_rate", "precision", "recall", "f1", "false_alarm_rate", "missed_event_rate"):
             value = overall[key]
             print(f"{key:20s}: {value:.4%}" if np.isfinite(value) else f"{key:20s}: N/A")
