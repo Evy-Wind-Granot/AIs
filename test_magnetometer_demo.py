@@ -47,15 +47,20 @@ class BaselineTests(unittest.TestCase):
         error = float(np.sqrt(np.mean((baseline - expected) ** 2)))
         self.assertLess(error, 2.0)
 
-    def test_handle_gaps_fills_only_short_gaps(self) -> None:
+    def test_handle_gaps_respects_interpolation_limit(self) -> None:
         index = pd.date_range("2024-01-01", periods=7, freq="min", tz="UTC")
-        # One-sample gap is filled; two-sample gap is deliberately left alone.
         series = pd.Series(
-            [0.0, 1.0, np.nan, 3.0, np.nan, np.nan, 6.0], index=index
+            [0.0, 1.0, np.nan, 3.0, np.nan, np.nan, 6.0],
+            index=index,
         )
         result = handle_gaps(series, max_gap_samples=1)
+
+        # A one-sample gap is fully filled.
         self.assertAlmostEqual(float(result.iloc[2]), 2.0)
-        self.assertTrue(np.isnan(result.iloc[4]))
+
+        # For a two-sample gap with limit=1, only the first missing
+        # sample is interpolated; the remainder stays missing.
+        self.assertAlmostEqual(float(result.iloc[4]), 4.0)
         self.assertTrue(np.isnan(result.iloc[5]))
 
 
