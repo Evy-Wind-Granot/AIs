@@ -45,84 +45,38 @@ class AcquisitionClient:
 
     __slots__ = ("session", "cache", "_dst_unavailable", "_dst_lock")
 
-    def __init__(
-        self,
-        *,
-        session: Optional[requests.Session] = None,
-        cache_enabled: bool = HTTP_CACHE_ENABLED,
-        cache_dir: str = HTTP_CACHE_DIR,
-        cache_ttl_hours: float = HTTP_CACHE_TTL_HOURS,
-    ) -> None:
+    def __init__(self, *, session: Optional[requests.Session] = None, cache_enabled: bool = HTTP_CACHE_ENABLED, cache_dir: str = HTTP_CACHE_DIR, cache_ttl_hours: float = HTTP_CACHE_TTL_HOURS) -> None:
         self.session = session or create_resilient_session()
-        self.cache = (
-            ResponseCache(cache_dir, cache_ttl_hours) if cache_enabled else None
-        )
+        self.cache = ResponseCache(cache_dir, cache_ttl_hours) if cache_enabled else None
         self._dst_unavailable: set[Tuple[int, int]] = set()
         self._dst_lock = threading.Lock()
 
-    def get_text(
-        self,
-        url: str,
-        params: Optional[Dict[str, Any]] = None,
-        *,
-        timeout: float = 30.0,
-        cacheable: bool = True,
-    ) -> Tuple[int, str]:
+    def get_text(self, url: str, params: Optional[Dict[str, Any]] = None, *, timeout: float = 30.0, cacheable: bool = True) -> Tuple[int, str]:
         key = ResponseCache.key(url, params)
         if cacheable and self.cache is not None:
             hit = self.cache.get(key)
             if hit is not None:
                 logger.debug("Cache hit for %s", url)
                 return hit
-
         response = self.session.get(url, params=params, timeout=timeout)
         result = (response.status_code, response.text)
         if cacheable and response.status_code == 200 and self.cache is not None:
             self.cache.put(key, *result)
         return result
 
-    def fetch_station(
-        self,
-        observatory: str = "VIC",
-        start_date: Optional[str] = None,
-        duration_days: int = 7,
-        samples_per_day: str = "Minute",
-    ) -> str:
+    def fetch_station(self, observatory: str = "VIC", start_date: Optional[str] = None, duration_days: int = 7, samples_per_day: str = "Minute") -> str:
         if start_date is None:
             start_date = "2024-01-01"
-        params = {
-            "Request": "GetData",
-            "observatoryIagaCode": observatory,
-            "samplesPerDay": samples_per_day,
-            "dataStartDate": start_date,
-            "dataDuration": duration_days,
-            "format": "iaga2002",
-            "orientation": "XYZF",
-        }
-        logger.info(
-            "Fetching INTERMAGNET data for %s from %s (%s days)...",
-            observatory,
-            start_date,
-            duration_days,
-        )
+        params = {"Request": "GetData", "observatoryIagaCode": observatory, "samplesPerDay": samples_per_day, "dataStartDate": start_date, "dataDuration": duration_days, "format": "iaga2002", "orientation": "XYZF"}
+        logger.info("Fetching INTERMAGNET data for %s from %s (%s days)...", observatory, start_date, duration_days)
         end_date = pd.to_datetime(start_date, utc=True) + pd.Timedelta(days=duration_days)
-        status, text = self.get_text(
-            INTERMAGNET_BASE,
-            params=params,
-            timeout=60,
-            cacheable=_window_is_historical(end_date),
-        )
+        status, text = self.get_text(INTERMAGNET_BASE, params=params, timeout=60, cacheable=_window_is_historical(end_date))
         if status >= 400:
-            raise requests.HTTPError(
-                f"INTERMAGNET returned HTTP {status} for {observatory}"
-            )
+            raise requests.HTTPError(f"INTERMAGNET returned HTTP {status} for {observatory}")
         return text
 
     def fetch_kp(self, start_date: str, end_date: str) -> pd.Series:
-        url = (
-            f"{KP_GFZ_URL}?start={start_date}T00:00:00Z"
-            f"&end={end_date}T23:59:59Z&index=Kp"
-        )
+        url = f"{KP_GFZ_URL}?start={start_date}T00:00:00Z&end={end_date}T23:59:59Z&index=Kp"
         cacheable = _window_is_historical(end_date)
         if not (cacheable and self.cache is not None and self.cache.contains(ResponseCache.key(url))):
             logger.info("Fetching Kp index from GFZ Potsdam...")
@@ -130,11 +84,7 @@ class AcquisitionClient:
         if status >= 400:
             raise requests.HTTPError(f"Kp service returned HTTP {status}")
         data = json.loads(text)
-        series = pd.Series(
-            pd.array(data["Kp"], dtype=float),
-            index=pd.DatetimeIndex(pd.to_datetime(data["datetime"], utc=True)),
-            name="kp",
-        )
+        series = pd.Series(pd.array(data["Kp"], dtype=float), index=pd.DatetimeIndex(pd.to_datetime(data["datetime"], utc=True)), name="kp")
         series.index.name = "datetime"
         return series.sort_index()
 
@@ -142,17 +92,13 @@ class AcquisitionClient:
         with self._dst_lock:
             if (year, month) in self._dst_unavailable:
                 return None
-
         yy, mm = year % 100, month
         urls = [
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_final/{year:04d}{mm:02d}/dst{yy:02d}{mm:02d}.for",
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_provisional/{year:04d}{mm:02d}/dst{yy:02d}{mm:02d}.for",
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_realtime/{year:04d}{mm:02d}/dst{yy:02d}{mm:02d}.for",
         ]
-        cacheable = _window_is_historical(
-            pd.Timestamp(year=year, month=month, day=1, tz="UTC")
-            + pd.DateOffset(months=1)
-        )
+        cacheable = _window_is_historical(pd.Timestamp(year=year, month=month, day=1, tz="UTC") + pd.DateOffset(months=1))
 
         def try_url(url: str) -> Optional[str]:
             try:
@@ -169,19 +115,12 @@ class AcquisitionClient:
         if text is None:
             with self._dst_lock:
                 self._dst_unavailable.add((year, month))
-            logger.warning(
-                "Dst index unavailable for %04d-%02d from Kyoto WDC "
-                "(server down or restricted). Skipping Dst.",
-                year,
-                month,
-            )
+            logger.warning("Dst index unavailable for %04d-%02d from Kyoto WDC (server down or restricted). Skipping Dst.", year, month)
             return None
 
         rows = []
         for line in text.splitlines():
-            if len(line) < 116 or not (
-                line[:3].strip().isdigit() or line[3:5].strip().isdigit()
-            ):
+            if len(line) < 116 or not (line[:3].strip().isdigit() or line[3:5].strip().isdigit()):
                 continue
             try:
                 day = int(line[8:10].strip())
@@ -189,14 +128,7 @@ class AcquisitionClient:
                 for hour in range(24):
                     value = hourly_part[hour * 4 : (hour + 1) * 4].strip()
                     if value and value != "9999":
-                        rows.append(
-                            {
-                                "datetime": datetime(
-                                    year, month, day, hour, tzinfo=timezone.utc
-                                ),
-                                "dst": int(value),
-                            }
-                        )
+                        rows.append({"datetime": datetime(year, month, day, hour, tzinfo=timezone.utc), "dst": int(value)})
             except (ValueError, IndexError):
                 continue
         if not rows:
@@ -204,21 +136,10 @@ class AcquisitionClient:
         return pd.DataFrame(rows).set_index("datetime")["dst"].sort_index()
 
 
-def create_resilient_session(
-    retries: int = 3,
-    backoff_factor: float = 1.0,
-    status_forcelist: Tuple[int, ...] = (429, 500, 502, 503, 504),
-) -> requests.Session:
+def create_resilient_session(retries: int = 3, backoff_factor: float = 1.0, status_forcelist: Tuple[int, ...] = (429, 500, 502, 503, 504)) -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
-    retry_strategy = Retry(
-        total=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=status_forcelist,
-        allowed_methods=frozenset({"GET", "HEAD", "POST"}),
-        respect_retry_after_header=True,
-        raise_on_status=False,
-    )
+    retry_strategy = Retry(total=retries, backoff_factor=backoff_factor, status_forcelist=status_forcelist, allowed_methods=frozenset({"GET", "HEAD", "POST"}), respect_retry_after_header=True, raise_on_status=False)
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
@@ -237,20 +158,26 @@ def _window_is_historical(end_date: Optional[Any], min_age_days: float = 2.0) ->
 
 DEFAULT_ACQUISITION = AcquisitionClient()
 
-# Compatibility exports. The runner can migrate one function at a time without
-# changing its public call surface.
 fetch_intermagnet_iaga2002 = DEFAULT_ACQUISITION.fetch_station
 fetch_kp_gfz = DEFAULT_ACQUISITION.fetch_kp
-fetch_dst_kyoto = DEFAULT_ACQUISITION.fetch_dst
+
+
+def fetch_dst_kyoto(year_or_month, month: Optional[int] = None) -> Optional[pd.Series]:
+    """Compatibility wrapper accepting either ``(year, month)`` or two args.
+
+    The runner historically submits ``(year, month)`` tuples to a thread pool,
+    while direct callers commonly pass two positional arguments.
+    """
+    if month is None:
+        try:
+            year, month = year_or_month
+        except (TypeError, ValueError) as exc:
+            raise TypeError("fetch_dst_kyoto expects (year, month) or year, month") from exc
+    else:
+        year = year_or_month
+    return DEFAULT_ACQUISITION.fetch_dst(int(year), int(month))
+
+
 http_get_text = DEFAULT_ACQUISITION.get_text
 
-__all__ = [
-    "AcquisitionClient",
-    "AcquisitionError",
-    "DEFAULT_ACQUISITION",
-    "create_resilient_session",
-    "fetch_intermagnet_iaga2002",
-    "fetch_kp_gfz",
-    "fetch_dst_kyoto",
-    "http_get_text",
-]
+__all__ = ["AcquisitionClient", "AcquisitionError", "DEFAULT_ACQUISITION", "create_resilient_session", "fetch_intermagnet_iaga2002", "fetch_kp_gfz", "fetch_dst_kyoto", "http_get_text"]
