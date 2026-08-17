@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Causally replay historical magnetometer samples through LiveDetector.
 
-The replay is deliberately independent of future observations.  It also
-normalizes chunk boundaries before scoring so overlapping upstream responses or
-duplicate timestamps cannot inflate the truth sample count.
+The replay is deliberately independent of future observations. It normalizes
+chunk boundaries before scoring so overlapping upstream responses or duplicate
+timestamps cannot inflate truth counts.
 """
 from __future__ import annotations
 
@@ -62,6 +62,14 @@ def _month_windows(start: pd.Timestamp, end: pd.Timestamp):
         cursor = nxt
 
 
+def _as_utc_timestamp(value) -> pd.Timestamp:
+    """Normalize naive or tz-aware timestamp-like values to UTC."""
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        return ts.tz_localize("UTC")
+    return ts.tz_convert("UTC")
+
+
 def _truth_events(index: pd.DatetimeIndex, global_level: np.ndarray) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
     events: list[tuple[pd.Timestamp, pd.Timestamp]] = []
     start: Optional[pd.Timestamp] = None
@@ -105,8 +113,8 @@ def main() -> int:
     parser.add_argument("--output", default="live_replay_report.json")
     args = parser.parse_args()
 
-    start = pd.Timestamp(args.start_date, tz="UTC")
-    end = pd.Timestamp(args.end_date, tz="UTC")
+    start = _as_utc_timestamp(args.start_date)
+    end = _as_utc_timestamp(args.end_date)
     if end <= start:
         raise SystemExit("--end-date must be after --start-date")
 
@@ -157,7 +165,7 @@ def main() -> int:
                 result = {
                     "status": "error",
                     "error": str(exc),
-                    "timestamp": timestamp.isoformat(),
+                    "timestamp": _as_utc_timestamp(timestamp).isoformat(),
                     "event": None,
                 }
 
@@ -183,7 +191,7 @@ def main() -> int:
 
             event = result.get("event") if isinstance(result.get("event"), dict) else None
             record = {
-                "timestamp": timestamp.isoformat(),
+                "timestamp": _as_utc_timestamp(timestamp).isoformat(),
                 "level": result.get("level"),
                 "status": status,
                 "amplitude_nt": result.get("amplitude_nt"),
@@ -191,7 +199,7 @@ def main() -> int:
                 "fast_trigger": result.get("fast_trigger", False),
                 "event": event,
             }
-            key = pd.Timestamp(timestamp, tz="UTC").isoformat()
+            key = _as_utc_timestamp(timestamp).isoformat()
             if key in predictions:
                 metrics.duplicate_samples += 1
             predictions[key] = record
@@ -230,14 +238,11 @@ def main() -> int:
     truth_events = _truth_events(truth_index, truth_level)
     metrics.truth_events = len(truth_events)
     starts = sorted(
-        pd.Timestamp(p["timestamp"], tz="UTC")
+        _as_utc_timestamp(p["timestamp"])
         for p in predictions.values()
         if isinstance(p.get("event"), dict) and p["event"].get("type") == "event_started"
     )
 
-    # Match each truth event to one causal detector start. A start must occur
-    # after the truth onset and before the truth event ends; it is not allowed
-    # to match multiple truth events.
     used: set[pd.Timestamp] = set()
     for event_start, event_end in truth_events:
         candidates = [s for s in starts if s not in used and event_start <= s <= event_end]
