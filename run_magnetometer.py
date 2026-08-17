@@ -8,8 +8,9 @@ cross-checking), run the classifier, print the numbers.
     python3 run_magnetometer.py --observatory VIC --start-date 2024-05-08 --days 5
 
 The runner deliberately keeps acquisition separate from scientific analysis:
-transport, retries, and historical caching live in ``magnetometer.acquisition``
-while ``magnetometer_demo`` remains the backwards-compatible analysis API.
+transport, retries, and historical caching live in ``magnetometer.acquisition``;
+IAGA-2002 parsing lives in ``magnetometer.parsing``; and ``magnetometer_demo``
+remains the backwards-compatible analysis API.
 """
 
 import argparse
@@ -25,6 +26,7 @@ from magnetometer.acquisition import (
     fetch_intermagnet_iaga2002,
     fetch_kp_gfz,
 )
+from magnetometer.parsing import parse_iaga2002_to_dataframe
 
 
 def fetch_window(observatory: str, start_date: str, days: int, warmup_days: float):
@@ -46,7 +48,7 @@ def fetch_window(observatory: str, start_date: str, days: int, warmup_days: floa
         kp_future = pool.submit(fetch_kp_gfz, fetch_start, end_guess)
 
         mag_text = mag_future.result()
-        df = md.parse_iaga2002_to_dataframe(mag_text)
+        df = parse_iaga2002_to_dataframe(mag_text)
         if df is None or df.empty:
             raise RuntimeError(f"No magnetometer data returned for {observatory}")
 
