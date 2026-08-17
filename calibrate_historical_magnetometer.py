@@ -22,14 +22,13 @@ import numpy as np
 import pandas as pd
 
 import magnetometer_demo as md
-from magnetometer.acquisition import fetch_dst_kyoto, fetch_intermagnet_iaga2002, fetch_kp_gfz
+from magnetometer.acquisition import fetch_intermagnet_iaga2002
 from magnetometer.parsing import parse_iaga2002_to_dataframe
 from magnetometer.classification import disturbance_amplitude
 from validate_historical_magnetometer import (
     Aggregator,
     align_global_indices,
     fetch_global_indices,
-    global_levels_from_indices,
     run_observatory,
 )
 
