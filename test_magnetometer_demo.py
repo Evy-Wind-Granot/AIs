@@ -10,10 +10,12 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
+from magnetometer.acquisition import fetch_dst_kyoto
 from magnetometer.baseline import (
     build_design_matrix,
     handle_gaps,
@@ -117,6 +119,16 @@ class ClassificationTests(unittest.TestCase):
                 "ok",
             ],
         )
+
+
+class AcquisitionTests(unittest.TestCase):
+    def test_dst_wrapper_accepts_tuple_and_two_arguments(self) -> None:
+        with patch("magnetometer.acquisition.DEFAULT_ACQUISITION.fetch_dst") as fetch:
+            fetch.return_value = None
+            self.assertIsNone(fetch_dst_kyoto((2024, 5)))
+            self.assertIsNone(fetch_dst_kyoto(2024, 5))
+            self.assertEqual(fetch.call_args_list[0].args, (2024, 5))
+            self.assertEqual(fetch.call_args_list[1].args, (2024, 5))
 
 
 class ParsingTests(unittest.TestCase):
