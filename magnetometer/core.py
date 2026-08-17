@@ -9,24 +9,23 @@ from . import legacy_core as _legacy
 from .legacy_core import *  # noqa: F401,F403
 from .legacy_core import main_entry, run_cli, run_loop
 
-# Numerical baseline implementation extracted from the monolith.
 from .baseline import build_design_matrix, handle_gaps, robust_harmonic_baseline
-
-# Activity classification implementation extracted from the monolith.
 from . import classification as _classification
-
-# Causal streaming detector for live sensor ingestion. It is intentionally
-# independent from acquisition/network code so MQTT, serial, HTTP and other
-# transports can feed the same deterministic detector.
 from .live import LiveConfig, LiveDetector
-
-# Strict config loader: rejects unknown keys and accepts flat FLAG_* JSON.
 from .config_strict import load_config as _strict_load_config
 
 
 def load_config(path: str):
-    """Load YAML/JSON config; unknown keys are fatal (EXIT_CONFIG_INVALID)."""
-    return _strict_load_config(path)
+    """Load strict config and synchronize the compatibility module namespace.
+
+    ``magnetometer_demo`` historically imports this facade with ``import *``.
+    Updating only ``legacy_core`` therefore left stale FLAG_* values in the
+    compatibility module.  Keep both namespaces synchronized after every load.
+    """
+    cfg = _strict_load_config(path)
+    for name in _legacy._SETTING_TYPES:
+        globals()[name] = getattr(_legacy, name)
+    return cfg
 
 
 def disturbance_amplitude(residual, cadence_s):
@@ -61,9 +60,6 @@ def cross_validate_flags(local_flags, dst_vals, kp_vals):
     return _classification.cross_validate_flags(local_flags, dst_vals, kp_vals)
 
 
-# Patch the legacy module's globals as well. Functions defined there resolve
-# their collaborators at call time, so the existing run_analysis orchestration
-# automatically uses the extracted classifier without changing its public API.
 _legacy.disturbance_amplitude = disturbance_amplitude
 _legacy.flag_activity = flag_activity
 _legacy.cross_validate_flags = cross_validate_flags
