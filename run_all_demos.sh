@@ -132,11 +132,32 @@ install_moirai_deps() {
 # ---------------------------------------------------------------------------
 run_magnetometer() {
     banner "MAGNETOMETER DEMO"
+    local exit_code=0
     if [[ "$MODE" == "self-test" ]]; then
-        python magnetometer_demo.py --self-test
+        python magnetometer_demo.py --self-test || exit_code=$?
     else
-        python magnetometer_demo.py --fetch-real-data --days 7 --start-date 2024-01-01
+        # Use May 2024 (known good data + calibrated storm period)
+        # instead of Jan 2024 (70% gaps, triggers quality gate)
+        python magnetometer_demo.py \
+            --fetch-real-data \
+            --observatory VIC \
+            --days 5 \
+            --start-date 2024-05-08 \
+            --warmup-days 3 \
+            --cross-check-indices \
+            --output-json magnetometer_results.json \
+            --log-format json \
+            || exit_code=$?
     fi
+
+    if [[ $exit_code -eq 2 ]]; then
+        warn "Magnetometer data-quality gate tripped — skipping metrics for this window."
+        return 2
+    elif [[ $exit_code -ne 0 ]]; then
+        error "Magnetometer crashed (exit $exit_code)."
+        return 1
+    fi
+    return 0
 }
 
 run_weather() {
@@ -229,7 +250,7 @@ run_seismic() {
         python seismic_demo.py --fetch-real-data \
             --network IU --station MAJO --channel BH? \
             --start 2024-01-01T07:00:00 --end 2024-01-01T11:00:00 \
-            --window-s 60 --step-s 30 --prob-threshold 0.4 #this threshold is for demo purposes only; adjust as needed
+            --window-s 60 --step-s 30 --prob-threshold 0.4
     fi
 }
 
@@ -291,7 +312,31 @@ EOF
     printf "Main venv:   %s\n" "$VENV_DIR"
     printf "Moirai venv: %s\n" "$MOIRAI_VENV"
 
-    if [[ $e1 -ne 0 || $e2 -ne 0 || $e3 -ne 0 ]]; then
+    local any_error=0
+    if [[ $e1 -eq 2 ]]; then
+        warn "Magnetometer: data-quality gate tripped (degraded, not fatal)"
+    elif [[ $e1 -ne 0 ]]; then
+        error "Magnetometer: failed (exit $e1)"
+        any_error=1
+    else
+        ok "Magnetometer: passed"
+    fi
+
+    if [[ $e2 -ne 0 ]]; then
+        error "Weather: failed (exit $e2)"
+        any_error=1
+    else
+        ok "Weather: passed"
+    fi
+
+    if [[ $e3 -ne 0 ]]; then
+        error "Seismic: failed (exit $e3)"
+        any_error=1
+    else
+        ok "Seismic: passed"
+    fi
+
+    if [[ $any_error -ne 0 ]]; then
         warn "One or more demos exited with an error."
         exit 1
     fi

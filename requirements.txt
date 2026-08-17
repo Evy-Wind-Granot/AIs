@@ -1,0 +1,12 @@
+# Runtime dependencies, pinned so an operational deployment is reproducible.
+# Verified against Python 3.10 and 3.11.
+numpy==2.2.1
+pandas==2.2.3
+scipy==1.14.1
+requests==2.32.3
+urllib3==1.26.5
+PyYAML>=6.0.1
+
+# Optional but recommended in production: makes --log-format json emit real
+# structured records instead of falling back to text.
+python-json-logger==4.1.0

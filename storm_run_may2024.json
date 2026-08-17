@@ -1,0 +1,72 @@
+{
+  "status": "ok",
+  "coverage": 1.0,
+  "median_fill_frac": 9.92063492063492e-05,
+  "baseline": {
+    "__type__": "ndarray",
+    "shape": [
+      10080
+    ],
+    "dtype": "float64"
+  },
+  "residual": {
+    "__type__": "ndarray",
+    "shape": [
+      10080
+    ],
+    "dtype": "float64"
+  },
+  "flags": {
+    "__type__": "ndarray",
+    "shape": [
+      10080
+    ],
+    "dtype": "object"
+  },
+  "validation": {
+    "__type__": "ndarray",
+    "shape": [
+      10080
+    ],
+    "dtype": "object"
+  },
+  "metrics": {
+    "quiet_rms_nt": 4.019134507351738,
+    "storm_detection_rate": 0.7920138888888889,
+    "false_alarm_rate": 0.225,
+    "missed_global_event_rate": 0.08958333333333333,
+    "under_reacting_rate": 0.13,
+    "unconfirmed_storm_rate": 0.41527813381184314,
+    "mean_abs_level_error": 0.7454271356783919,
+    "validation_yield_ok": 0.9741071428571428,
+    "samples_with_global_data": 10080,
+    "total_samples": 10080,
+    "exact_tier_accuracy": 0.4554773869346734
+  },
+  "provenance": {
+    "version": "2.0.0",
+    "git_hash": "e25357eba",
+    "run_timestamp": "2026-08-14T20:09:36.575324+00:00",
+    "observatory": "VIC",
+    "column": "x_nt",
+    "start_date": "2024-05-10",
+    "warmup_days": 3.0,
+    "analysis_days": 7,
+    "cadence_s": 60,
+    "thresholds": {
+      "unsettled": 10.0,
+      "active": 15.0,
+      "minor_storm": 30.0,
+      "major_storm": 140.0,
+      "severe_storm": 500.0,
+      "anomaly_jump": 80.0,
+      "max_plausible": 3000.0,
+      "min_plausible": -3000.0
+    },
+    "quality_gates": {
+      "min_coverage": 0.9,
+      "max_median_fill": 0.2
+    },
+    "validation_source": "none"
+  }
+}

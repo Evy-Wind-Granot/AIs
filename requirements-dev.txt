@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Test, lint and type-check tooling used by CI (see .github/workflows/ci.yml).
+flake8==7.1.1
+mypy==2.3.0

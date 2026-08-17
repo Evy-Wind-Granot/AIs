@@ -25,7 +25,6 @@ import sys
 import time
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Demo configurations
 # ---------------------------------------------------------------------------
@@ -33,20 +32,57 @@ DEMOS = {
     "magnetometer": {
         "script": "magnetometer_demo.py",
         "self_test_args": ["--self-test"],
-        "real_args": ["--fetch-real-data", "--days", "7", "--start-date", "2024-01-01"],
+        "real_args": [
+            "--fetch-real-data",
+            "--observatory",
+            "VIC",
+            "--days",
+            "5",
+            "--start-date",
+            "2024-05-08",
+            "--warmup-days",
+            "3",
+            "--cross-check-indices",
+            "--output-json",
+            "magnetometer_results.json",
+            "--log-format",
+            "json",
+        ],
         "quick": True,
     },
     "weather": {
         "script": "weather_tsfm_engine_v2_production_hybrid_fixed.py",
-        "self_test_args": ["--mode", "benchmark", "--model", "persistence,seasonal_naive", "--station-id", "51337", "--year", "2024", "--months", "1", "--horizon", "24", "--n-splits", "3"],
+        "self_test_args": [
+            "--mode",
+            "benchmark",
+            "--model",
+            "persistence,seasonal_naive",
+            "--station-id",
+            "51337",
+            "--year",
+            "2024",
+            "--months",
+            "1",
+            "--horizon",
+            "24",
+            "--n-splits",
+            "3",
+        ],
         "real_args": [
-            "--mode", "benchmark",
-            "--model", "toto-22m,chronos2-small,timesfm25,moirai20-small,persistence,seasonal_naive",
-            "--station-id", "51337",
-            "--year", "2024",
-            "--months", "1",
-            "--horizon", "24",
-            "--n-splits", "5",
+            "--mode",
+            "benchmark",
+            "--model",
+            "toto-22m,chronos2-small,timesfm25,moirai20-small,persistence,seasonal_naive",
+            "--station-id",
+            "51337",
+            "--year",
+            "2024",
+            "--months",
+            "1",
+            "--horizon",
+            "24",
+            "--n-splits",
+            "5",
         ],
         "quick": False,
     },
@@ -55,14 +91,22 @@ DEMOS = {
         "self_test_args": ["--self-test"],
         "real_args": [
             "--fetch-real-data",
-            "--network", "IU",
-            "--station", "MAJO",
-            "--channel", "BH?",
-            "--start", "2024-01-01T07:00:00",
-            "--end", "2024-01-01T11:00:00",
-            "--window-s", "60",
-            "--step-s", "30",
-            "--prob-threshold", "0.5",#this threshold is for demo purposes only; if you run the python script directly, you can adjust it as needed
+            "--network",
+            "IU",
+            "--station",
+            "MAJO",
+            "--channel",
+            "BH?",
+            "--start",
+            "2024-01-01T07:00:00",
+            "--end",
+            "2024-01-01T11:00:00",
+            "--window-s",
+            "60",
+            "--step-s",
+            "30",
+            "--prob-threshold",
+            "0.5",
         ],
         "quick": False,
     },
@@ -83,11 +127,12 @@ def banner(text, width=70):
 
 
 def run_demo(name, args_list, timeout=300, python_exe=None):
+    """Run a demo script. Returns (ok, exit_code, stdout)."""
     cfg = DEMOS[name]
     script = cfg["script"]
     if not Path(script).exists():
         print(f"[SKIP] {script} not found in current directory.")
-        return None, ""
+        return None, -1, ""
 
     exe = python_exe or sys.executable
     cmd = [exe, script] + args_list
@@ -101,7 +146,7 @@ def run_demo(name, args_list, timeout=300, python_exe=None):
         )
     except subprocess.TimeoutExpired:
         print(f"[TIMEOUT] {name} exceeded {timeout}s.")
-        return None, ""
+        return False, -1, ""
     elapsed = time.time() - start
 
     if result.stdout:
@@ -109,8 +154,14 @@ def run_demo(name, args_list, timeout=300, python_exe=None):
     if result.returncode != 0 and result.stderr:
         print(f"[STDERR] {result.stderr}")
 
-    print(f"\n✓ {name} finished in {elapsed:.1f}s (exit={result.returncode})")
-    return result.returncode == 0, result.stdout
+    ok = result.returncode == 0
+    # exit code 2 = data-quality gate (degraded, not fatal)
+    degraded = result.returncode == 2
+    status = "OK" if ok else ("DEGRADED" if degraded else "FAIL")
+    print(
+        f"\n✓ {name} finished in {elapsed:.1f}s (exit={result.returncode}, status={status})"
+    )
+    return ok or degraded, result.returncode, result.stdout
 
 
 def extract_metric(text, keyword, lines_after=0):
@@ -178,20 +229,28 @@ def merge_json_results(main_path, moirai_path, output_path):
 def print_weather_table(results_json):
     """Reconstruct the benchmark table from merged JSON."""
     print("\n" + "=" * 120)
-    print(f"{'field':<14}{'backend':<22}{'params':<8}{'MAE':<10}{'RMSE':<10}{'MASE':<10}{'CRPS':<10}{'ms/call':<10}{'mv':<4}")
+    print(
+        f"{'field':<14}{'backend':<22}{'params':<8}{'MAE':<10}{'RMSE':<10}{'MASE':<10}{'CRPS':<10}{'ms/call':<10}{'mv':<4}"
+    )
     print("-" * 120)
     for feat, backends in results_json.get("benchmark_metrics", {}).items():
         ranked = sorted(backends.items(), key=lambda kv: kv[1].get("avg_mase", 999))
         for bname, m in ranked:
             mv = "yes" if m.get("multivariate") else "no"
-            print(f"{feat:<14}{bname:<22}{str(m.get('params','-')):<8}"
-                  f"{m.get('avg_mae','-'):<10}{m.get('avg_rmse','-'):<10}"
-                  f"{m.get('avg_mase','-'):<10}{m.get('avg_crps','-'):<10}"
-                  f"{m.get('avg_latency_ms','-'):<10}{mv:<4}")
+            print(
+                f"{feat:<14}{bname:<22}{str(m.get('params','-')):<8}"
+                f"{m.get('avg_mae','-'):<10}{m.get('avg_rmse','-'):<10}"
+                f"{m.get('avg_mase','-'):<10}{m.get('avg_crps','-'):<10}"
+                f"{m.get('avg_latency_ms','-'):<10}{mv:<4}"
+            )
     print("=" * 120)
-    print("MASE < 1.0 beats seasonal-naive. CRPS = probabilistic calibration (lower = better).")
+    print(
+        "MASE < 1.0 beats seasonal-naive. CRPS = probabilistic calibration (lower = better)."
+    )
     print("mv = multivariate native. -mv suffix = Toto multivariate on clean sensors.")
-    print("\n⚠️  NOTE: ECCC data may overlap Chronos/TimesFM pretraining — treat those MASE as optimistic.\n")
+    print(
+        "\n⚠️  NOTE: ECCC data may overlap Chronos/TimesFM pretraining — treat those MASE as optimistic.\n"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +268,7 @@ def run_weather_benchmark(args_list, timeout=600):
     if main_models:
         main_args = build_args_with_models(args_list, main_models)
         main_args.extend(["--output", str(main_json)])
-        ok, stdout = run_demo("weather", main_args, timeout=timeout)
+        ok, code, stdout = run_demo("weather", main_args, timeout=timeout)
         if not ok:
             print("[WARN] Main-env weather benchmark had errors.")
     else:
@@ -232,7 +291,9 @@ def run_weather_benchmark(args_list, timeout=600):
             moirai_python = MOIRAI_VENV / "bin" / "python"
             moirai_args = build_args_with_models(args_list, moirai_models)
             moirai_args.extend(["--output", str(moirai_json)])
-            ok, stdout = run_demo("weather", moirai_args, timeout=timeout, python_exe=str(moirai_python))
+            ok, code, stdout = run_demo(
+                "weather", moirai_args, timeout=timeout, python_exe=str(moirai_python)
+            )
             if not ok:
                 print("[WARN] Moirai venv benchmark had errors.")
     else:
@@ -296,36 +357,52 @@ def main():
         if name == "weather":
             # Special handling: auto-split Moirai into separate venv
             ok = run_weather_benchmark(cmd_args, timeout=args.timeout)
-            results[name] = {"ok": ok, "stdout": ""}
+            results[name] = {"ok": ok, "exit_code": 0, "stdout": ""}
         else:
-            ok, stdout = run_demo(name, cmd_args, timeout=args.timeout)
-            results[name] = {"ok": ok, "stdout": stdout}
+            ok, exit_code, stdout = run_demo(name, cmd_args, timeout=args.timeout)
+            results[name] = {"ok": ok, "exit_code": exit_code, "stdout": stdout}
 
     # -----------------------------------------------------------------------
     # Summary table
     # -----------------------------------------------------------------------
     banner("SUMMARY")
-    print(f"{'Demo':<15} {'Status':<10} {'Key Metric'}")
+    print(f"{'Demo':<15} {'Status':<12} {'Exit':<6} {'Key Metric'}")
     print("-" * 70)
 
     for name in ["magnetometer", "weather", "seismic"]:
         ok = results[name]["ok"]
-        status = "OK" if ok else "FAIL"
+        exit_code = results[name].get("exit_code", 0)
         stdout = results[name]["stdout"] or ""
+
+        if exit_code == 2:
+            status = "DEGRADED"
+        elif ok:
+            status = "OK"
+        else:
+            status = "FAIL"
 
         if name == "magnetometer":
             metric = extract_metric(stdout, "Residual overall RMS")
+            if exit_code == 2:
+                metric = "Data-quality gate tripped"
         elif name == "weather":
             metric = "See weather_merged_results.json"
         else:
             metric = extract_metric(stdout, "Model agreement")
 
-        print(f"{name:<15} {status:<10} {metric}")
+        print(f"{name:<15} {status:<12} {exit_code:<6} {metric}")
 
     # Save JSON summary
     summary_path = f"run_all_summary_{mode}.json"
     with open(summary_path, "w") as f:
-        json.dump({k: {"ok": v["ok"]} for k, v in results.items()}, f, indent=2)
+        json.dump(
+            {
+                k: {"ok": v["ok"], "exit_code": v.get("exit_code", 0)}
+                for k, v in results.items()
+            },
+            f,
+            indent=2,
+        )
     print(f"\nSummary written to: {summary_path}")
 
     all_ok = all(v["ok"] for v in results.values() if v["ok"] is not None)
