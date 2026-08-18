@@ -7,6 +7,12 @@ timestamps cannot inflate truth counts. Event scoring is interval-based: an
 alert that starts shortly before a reference storm is an early warning, not a
 miss simply because its ``event_started`` timestamp precedes the reference
 onset.
+
+The report also contains an event-by-event diagnostic table. Every reference
+storm is classified as detected/missed and includes duration, detector
+amplitude evidence, onset delta, early-warning lead, and a concise reason for
+a miss. This is intentionally diagnostic rather than a threshold tuner: the
+next calibration decision should be based on which events are missed and why.
 """
 from __future__ import annotations
 
@@ -109,10 +115,7 @@ def _event_type(result: dict) -> Optional[str]:
     return event.get("type") if isinstance(event, dict) else None
 
 
-def _close_event_intervals(
-    event_intervals: dict[str, dict],
-    last_timestamp: Optional[pd.Timestamp],
-) -> list[dict]:
+def _close_event_intervals(event_intervals: dict[str, dict], last_timestamp: Optional[pd.Timestamp]) -> list[dict]:
     if last_timestamp is not None:
         for event in event_intervals.values():
             if event.get("end") is None:
@@ -124,20 +127,15 @@ def _match_events(
     truth_events: list[tuple[pd.Timestamp, pd.Timestamp]],
     detector_events: list[dict],
     max_early_warning_min: float = 180.0,
-) -> tuple[int, list[float], list[float]]:
-    """Greedily match detector intervals to reference intervals.
-
-    A detector event counts when its interval overlaps a truth event, or when
-    it starts before truth onset but no more than ``max_early_warning_min``
-    early and remains active into the truth interval. Each detector event is
-    used at most once.
-    """
+) -> tuple[int, list[float], list[float], dict[int, str]]:
+    """Match detector intervals to reference intervals and retain event mapping."""
     matched = 0
-    onset_deltas: list[float] = []
-    lead_times: list[float] = []
+    onset_deltas_min: list[float] = []
+    lead_times_min: list[float] = []
+    matched_detector_by_truth: dict[int, str] = {}
     used: set[str] = set()
 
-    for truth_start, truth_end in truth_events:
+    for truth_idx, (truth_start, truth_end) in enumerate(truth_events, start=1):
         candidates = []
         for event in detector_events:
             event_id = event["event_id"]
@@ -145,12 +143,10 @@ def _match_events(
                 continue
             event_start = event["start"]
             event_end = event["end"]
-            if event_end < truth_start:
+            if event_end < truth_start or event_start > truth_end:
                 continue
             early_min = (truth_start - event_start).total_seconds() / 60.0
             if early_min > max_early_warning_min:
-                continue
-            if event_start > truth_end:
                 continue
             overlap_start = max(event_start, truth_start)
             overlap_end = min(event_end, truth_end)
@@ -162,17 +158,86 @@ def _match_events(
         if not candidates:
             continue
 
-        # Prefer the detector interval with the greatest overlap; break ties
-        # in favour of the earliest onset so early warnings are preserved.
         _, detector_start, event_id = max(candidates, key=lambda item: (item[0], -item[1].value))
         used.add(event_id)
         matched += 1
+        matched_detector_by_truth[truth_idx] = event_id
         delta = (detector_start - truth_start).total_seconds() / 60.0
-        onset_deltas.append(delta)
+        onset_deltas_min.append(delta)
         if delta < 0:
-            lead_times.append(-delta)
+            lead_times_min.append(-delta)
 
-    return matched, onset_deltas, lead_times
+    return matched, onset_deltas_min, lead_times_min, matched_detector_by_truth
+
+
+def _event_diagnostics(
+    truth_events: list[tuple[pd.Timestamp, pd.Timestamp]],
+    detector_events: list[dict],
+    predictions: dict[str, dict],
+    matched_detector_by_truth: dict[int, str],
+) -> list[dict]:
+    """Build actionable diagnostics for every reference storm."""
+    detector_by_id = {e["event_id"]: e for e in detector_events}
+    diagnostics: list[dict] = []
+
+    for truth_idx, (truth_start, truth_end) in enumerate(truth_events, start=1):
+        timestamps = pd.date_range(truth_start, truth_end, freq="min", tz="UTC")
+        records = [predictions.get(ts.isoformat(), {}) for ts in timestamps]
+        amplitudes = np.asarray([_safe_float(r.get("amplitude_nt")) for r in records], dtype=float)
+        fast_amplitudes = np.asarray([_safe_float(r.get("fast_amplitude_nt")) for r in records], dtype=float)
+        levels = [r.get("level") for r in records]
+        valid_amp = amplitudes[np.isfinite(amplitudes)]
+        valid_fast = fast_amplitudes[np.isfinite(fast_amplitudes)]
+
+        detector_id = matched_detector_by_truth.get(truth_idx)
+        detector = detector_by_id.get(detector_id) if detector_id else None
+        delta = None
+        lead = None
+        if detector is not None:
+            delta = (detector["start"] - truth_start).total_seconds() / 60.0
+            if delta < 0:
+                lead = -delta
+
+        storm_minutes = sum(level in STORM_FLAGS for level in levels)
+        peak_amp = float(np.nanmax(valid_amp)) if valid_amp.size else None
+        peak_fast = float(np.nanmax(valid_fast)) if valid_fast.size else None
+
+        if detector is not None:
+            status = "detected"
+            reason = "overlapping live event"
+        else:
+            status = "missed"
+            if not records:
+                reason = "no replay samples in truth interval"
+            elif storm_minutes == 0:
+                reason = "detector never classified a storm during the reference interval"
+            elif peak_amp is None:
+                reason = "no valid detector amplitude evidence"
+            else:
+                reason = "no live event interval overlapped the reference storm"
+
+        diagnostics.append(
+            {
+                "truth_event": truth_idx,
+                "status": status,
+                "truth_start": truth_start.isoformat(),
+                "truth_end": truth_end.isoformat(),
+                "duration_min": (truth_end - truth_start).total_seconds() / 60.0 + 1.0,
+                "storm_classified_minutes": storm_minutes,
+                "peak_amplitude_nt": peak_amp,
+                "peak_fast_amplitude_nt": peak_fast,
+                "detector_event_id": detector_id,
+                "detector_start": detector["start"].isoformat() if detector else None,
+                "detector_end": detector["end"].isoformat() if detector else None,
+                "onset_delta_min": delta,
+                "early_warning_lead_min": lead,
+                "detector_trigger": detector.get("trigger") if detector else None,
+                "detector_level": detector.get("level") if detector else None,
+                "reason": reason,
+            }
+        )
+
+    return diagnostics
 
 
 def main() -> int:
@@ -244,12 +309,7 @@ def main() -> int:
             try:
                 result = detector.update(timestamp_utc, value)
             except Exception as exc:
-                result = {
-                    "status": "error",
-                    "error": str(exc),
-                    "timestamp": timestamp_utc.isoformat(),
-                    "event": None,
-                }
+                result = {"status": "error", "error": str(exc), "timestamp": timestamp_utc.isoformat(), "event": None}
 
             status = result.get("status")
             if status == "warming_up":
@@ -310,14 +370,9 @@ def main() -> int:
         truth_level = np.asarray([], dtype=float)
 
     expected_index = pd.date_range(start=start, end=end - pd.Timedelta(minutes=1), freq="min", tz="UTC")
-    expected_set = set(expected_index)
-    actual_set = set(truth_index)
-    metrics.missing_samples = len(expected_set - actual_set)
+    metrics.missing_samples = len(set(expected_index) - set(truth_index))
 
-    flags = np.array(
-        [predictions.get(ts.isoformat(), {}).get("level", "invalid") for ts in truth_index],
-        dtype=object,
-    )
+    flags = np.array([predictions.get(ts.isoformat(), {}).get("level", "invalid") for ts in truth_index], dtype=object)
     valid = np.isfinite(truth_level)
     predicted_storm = np.isin(flags, list(STORM_FLAGS))
     truth_storm = valid & (truth_level >= 3)
@@ -332,9 +387,10 @@ def main() -> int:
     truth_events = _truth_events(truth_index, truth_level)
     detector_events = _close_event_intervals(event_intervals, last_seen_timestamp)
     metrics.truth_events = len(truth_events)
-    metrics.truth_events_detected, metrics.onset_deltas_min, metrics.lead_times_min = _match_events(
+    metrics.truth_events_detected, metrics.onset_deltas_min, metrics.lead_times_min, matched = _match_events(
         truth_events, detector_events
     )
+    diagnostics = _event_diagnostics(truth_events, detector_events, predictions, matched)
 
     sample_metrics = binary_metrics(metrics.tp, metrics.fp, metrics.fn, metrics.tn)
     event_recall = metrics.truth_events_detected / metrics.truth_events if metrics.truth_events else float("nan")
@@ -342,6 +398,7 @@ def main() -> int:
     median_delta = float(np.median(metrics.onset_deltas_min)) if metrics.onset_deltas_min else float("nan")
     p95_delta = float(np.percentile(metrics.onset_deltas_min, 95)) if metrics.onset_deltas_min else float("nan")
     median_lead = float(np.median(metrics.lead_times_min)) if metrics.lead_times_min else float("nan")
+    missed = [d for d in diagnostics if d["status"] == "missed"]
 
     report = {
         "mode": "causal_live_replay",
@@ -361,9 +418,7 @@ def main() -> int:
             "global_truth_samples": metrics.global_truth,
             "truth_coverage": coverage,
         },
-        "sample_metrics": {
-            "tp": metrics.tp, "fp": metrics.fp, "fn": metrics.fn, "tn": metrics.tn, **sample_metrics
-        },
+        "sample_metrics": {"tp": metrics.tp, "fp": metrics.fp, "fn": metrics.fn, "tn": metrics.tn, **sample_metrics},
         "events": {
             "truth_events": metrics.truth_events,
             "truth_events_detected": metrics.truth_events_detected,
@@ -375,6 +430,8 @@ def main() -> int:
             "matched_onset_delta_min_p95": p95_delta,
             "early_warning_lead_min_median": median_lead,
             "detector_event_intervals": detector_events,
+            "event_diagnostics": diagnostics,
+            "missed_events": missed,
         },
     }
 
@@ -399,6 +456,10 @@ def main() -> int:
     print(f"Median onset delta : {median_delta:.2f} min" if metrics.onset_deltas_min else "Median onset delta : n/a")
     print(f"P95 onset delta    : {p95_delta:.2f} min" if metrics.onset_deltas_min else "P95 onset delta    : n/a")
     print(f"Median early lead  : {median_lead:.2f} min" if metrics.lead_times_min else "Median early lead  : n/a")
+    print(f"Missed events      : {len(missed)}")
+    for item in missed:
+        peak = f"{item['peak_amplitude_nt']:.1f}nT" if item['peak_amplitude_nt'] is not None else "n/a"
+        print(f"  #{item['truth_event']} {item['truth_start']} -> {item['truth_end']} | peak={peak} | {item['reason']}")
     print(f"Report written to  : {args.output}")
     return 0
 
