@@ -15,6 +15,8 @@ class FeatureConfig:
     cadence_s: float = 60.0
     lookback_hours: float = 12.0
     windows_min: tuple[int, ...] = (15, 30, 60, 180, 360, 720)
+    kp_release_lag_min: int = 180
+    dst_release_lag_min: int = 60
 
     def __post_init__(self) -> None:
         if self.cadence_s <= 0:
@@ -25,6 +27,8 @@ class FeatureConfig:
             raise ValueError("windows_min must contain positive values")
         if max(self.windows_min) > self.lookback_hours * 60:
             raise ValueError("largest feature window cannot exceed lookback_hours")
+        if self.kp_release_lag_min < 0 or self.dst_release_lag_min < 0:
+            raise ValueError("index release lags cannot be negative")
 
 
 def _rolling_energy(series: pd.Series, window: int) -> pd.Series:
@@ -45,7 +49,12 @@ def build_features(
     index: pd.DatetimeIndex | None = None,
     config: FeatureConfig = FeatureConfig(),
 ) -> pd.DataFrame:
-    """Build a causal feature matrix from residual and optional global indices."""
+    """Build a causal feature matrix from residual and optional global indices.
+
+    Series-valued Kp/Dst inputs are delayed by their conservative release lag:
+    three hours for Kp and one hour for Dst.  This prevents a finalized index
+    value from being exposed to a prediction timestamp inside its own interval.
+    """
     if isinstance(residual, pd.Series):
         series = residual.astype(float).copy()
         if index is not None:
@@ -103,6 +112,12 @@ def build_features(
         if isinstance(values, pd.Series):
             aligned = values.astype(float).copy()
             aligned.index = pd.DatetimeIndex(pd.to_datetime(aligned.index, utc=True))
+            lag_min = (
+                config.kp_release_lag_min
+                if name == "kp"
+                else config.dst_release_lag_min
+            )
+            aligned.index = aligned.index + pd.Timedelta(minutes=lag_min)
             frame[name] = aligned.reindex(idx, method="ffill")
         else:
             arr = np.asarray(values, dtype=float)
@@ -153,8 +168,6 @@ def build_targets(
         series = pd.Series(values, index=index)
 
     window = max(1, int(round(amplitude_window_min * 60.0 / cadence_s)))
-    # Reverse rolling computes [t, t+window); shifting places the target window
-    # strictly after the forecast timestamp.
     future_roll = series.iloc[::-1].rolling(window, min_periods=window)
     future_amplitude = (future_roll.max() - future_roll.min()).iloc[::-1]
     return {
