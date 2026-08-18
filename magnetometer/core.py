@@ -1,9 +1,4 @@
-"""Public magnetometer pipeline API.
-
-This is the stable compatibility facade used by the CLI. Implementation
-responsibilities are progressively delegated to focused submodules while the
-legacy public call surface remains available.
-"""
+"""Public magnetometer pipeline API with optional ML forecasting."""
 
 from __future__ import annotations
 
@@ -15,11 +10,12 @@ import numpy as np
 from . import legacy_core as _legacy
 from .legacy_core import *  # noqa: F401,F403
 from .legacy_core import main_entry, run_cli, run_loop
-
 from .baseline import build_design_matrix, handle_gaps, robust_harmonic_baseline
 from . import classification as _classification
 from .live import LiveConfig, LiveDetector
 from .config_strict import load_config as _strict_load_config
+
+_DETERMINISTIC_RUN_ANALYSIS = _legacy.run_analysis
 
 
 def load_config(path: str):
@@ -32,21 +28,15 @@ def load_config(path: str):
 
 def disturbance_amplitude(residual, cadence_s):
     return _classification.disturbance_amplitude(
-        residual,
-        cadence_s,
-        window_min=_legacy.FLAG_AMPLITUDE_WINDOW_MIN,
-        mode=_legacy.FLAG_AMPLITUDE_MODE,
-        centered=_legacy.FLAG_AMPLITUDE_CENTERED,
+        residual, cadence_s, window_min=_legacy.FLAG_AMPLITUDE_WINDOW_MIN,
+        mode=_legacy.FLAG_AMPLITUDE_MODE, centered=_legacy.FLAG_AMPLITUDE_CENTERED,
     )
 
 
 def flag_activity(residual, cadence_s=60.0):
     return _classification.flag_activity(
-        residual,
-        cadence_s,
-        window_min=_legacy.FLAG_AMPLITUDE_WINDOW_MIN,
-        mode=_legacy.FLAG_AMPLITUDE_MODE,
-        centered=_legacy.FLAG_AMPLITUDE_CENTERED,
+        residual, cadence_s, window_min=_legacy.FLAG_AMPLITUDE_WINDOW_MIN,
+        mode=_legacy.FLAG_AMPLITUDE_MODE, centered=_legacy.FLAG_AMPLITUDE_CENTERED,
         unsettled_nt=_legacy.FLAG_THRESHOLD_UNSETTLED_NT,
         active_nt=_legacy.FLAG_THRESHOLD_ACTIVE_NT,
         minor_storm_nt=_legacy.FLAG_THRESHOLD_MINOR_STORM_NT,
@@ -74,29 +64,23 @@ def _attach_ml_forecast(result: Dict[str, Any], *, cadence_s: float, observatory
         result["forecast"] = {"enabled": False, "status": "data_quality_gate"}
         return result
 
-    default_path = Path("models") / "artifacts" / f"{observatory.lower()}_forecaster.pkl"
-    artifact = Path(os.environ.get("MAGNETOMETER_FORECAST_MODEL", str(default_path)))
+    artifact = Path(os.environ.get(
+        "MAGNETOMETER_FORECAST_MODEL",
+        str(Path("models") / "artifacts" / f"{observatory.lower()}_forecaster.pkl"),
+    ))
     if not artifact.exists():
-        result["forecast"] = {
-            "enabled": False,
-            "status": "model_not_trained",
-            "artifact": str(artifact),
-        }
+        result["forecast"] = {"enabled": False, "status": "model_not_trained", "artifact": str(artifact)}
         return result
 
     try:
         from models.forecaster import build_training_data, load_model
-
         model = load_model(artifact)
         residual = np.asarray(result.get("residual"), dtype=float)
         anchor = analysis_start_time if analysis_start_time is not None else start_time
         if anchor is None:
             raise ValueError("inference requires start_time or analysis_start_time")
-        index = pd.date_range(
-            pd.to_datetime(anchor, utc=True),
-            periods=len(residual),
-            freq=pd.Timedelta(seconds=cadence_s),
-        )
+        index = pd.date_range(pd.to_datetime(anchor, utc=True), periods=len(residual),
+                              freq=pd.Timedelta(seconds=cadence_s))
         residual_series = pd.Series(residual, index=index)
 
         def align(source: Any) -> pd.Series | None:
@@ -107,44 +91,31 @@ def _attach_ml_forecast(result: Dict[str, Any], *, cadence_s: float, observatory
                 src.index = pd.DatetimeIndex(pd.to_datetime(src.index, utc=True))
                 return src.reindex(index, method="ffill")
             values = np.asarray(source, dtype=float)
-            if len(values) == len(residual):
-                return pd.Series(values, index=index)
-            return None
+            return pd.Series(values, index=index) if len(values) == len(residual) else None
 
-        kp = align(kp_series)
-        dst = align(dst_series)
         features, _ = build_training_data(
-            residual_series,
-            kp,
-            dst,
-            cadence_s=cadence_s,
-            config=model.config,
+            residual_series, align(kp_series), align(dst_series),
+            cadence_s=cadence_s, config=model.config,
         )
         forecasts = model.predict(features)
-
         levels = ("quiet", "unsettled", "active", "minor_storm", "major_storm", "severe_storm")
         flags = np.asarray(result.get("flags", []), dtype=object)
         current = str(flags[-1]) if len(flags) else "unknown"
         current_rank = levels.index(current) if current in levels else -1
-        max_delta = 0
-        for forecast in forecasts.values():
-            max_delta = max(max_delta, levels.index(forecast["predicted_tier"]) - current_rank)
-
+        max_delta = max(
+            (levels.index(f["predicted_tier"]) - current_rank for f in forecasts.values()),
+            default=0,
+        )
         result["forecast"] = {
-            "enabled": True,
-            "status": "ok",
-            "artifact": str(artifact),
+            "enabled": True, "status": "ok", "artifact": str(artifact),
             "horizons": {str(k): v for k, v in forecasts.items()},
-            "current_tier": current,
-            "max_tier_delta": int(max_delta),
+            "current_tier": current, "max_tier_delta": int(max_delta),
             "early_warning": bool(max_delta >= 2),
         }
     except Exception as exc:  # pragma: no cover - deployment failure path
         _legacy.logger.exception("ML forecast unavailable; deterministic result retained")
         result["forecast"] = {
-            "enabled": False,
-            "status": "inference_error",
-            "error": str(exc),
+            "enabled": False, "status": "inference_error", "error": str(exc),
             "artifact": str(artifact),
         }
     return result
@@ -152,22 +123,16 @@ def _attach_ml_forecast(result: Dict[str, Any], *, cadence_s: float, observatory
 
 def run_analysis(*args, **kwargs):
     """Run deterministic analysis and append optional ML forecasts."""
-    result = _legacy.run_analysis(*args, **kwargs)
+    result = _DETERMINISTIC_RUN_ANALYSIS(*args, **kwargs)
     cadence_s = float(args[1] if len(args) > 1 else kwargs.get("cadence_s", 60.0))
     return _attach_ml_forecast(
-        result,
-        cadence_s=cadence_s,
-        observatory=str(kwargs.get("observatory", "-")),
-        start_time=kwargs.get("start_time"),
-        analysis_start_time=kwargs.get("analysis_start_time"),
-        kp_series=kwargs.get("kp_series"),
-        dst_series=kwargs.get("dst_series"),
+        result, cadence_s=cadence_s, observatory=str(kwargs.get("observatory", "-")),
+        start_time=kwargs.get("start_time"), analysis_start_time=kwargs.get("analysis_start_time"),
+        kp_series=kwargs.get("kp_series"), dst_series=kwargs.get("dst_series"),
     )
 
 
-# Internal legacy functions resolve run_analysis by module global lookup. Point
-# that lookup at this wrapper so existing live/batch loops get the same hybrid
-# behavior without changing their public call signatures.
+# Existing legacy batch/live loops resolve run_analysis by module-global lookup.
 _legacy.run_analysis = run_analysis
 _legacy.disturbance_amplitude = disturbance_amplitude
 _legacy.flag_activity = flag_activity
