@@ -15,6 +15,7 @@ class FeatureConfig:
     cadence_s: float = 60.0
     lookback_hours: float = 12.0
     windows_min: tuple[int, ...] = (15, 30, 60, 180, 360, 720)
+    amplitude_window_min: int = 180
     kp_release_lag_min: int = 180
     dst_release_lag_min: int = 60
 
@@ -27,8 +28,14 @@ class FeatureConfig:
             raise ValueError("windows_min must contain positive values")
         if max(self.windows_min) > self.lookback_hours * 60:
             raise ValueError("largest feature window cannot exceed lookback_hours")
+        if self.amplitude_window_min <= 0:
+            raise ValueError("amplitude_window_min must be positive")
         if self.kp_release_lag_min < 0 or self.dst_release_lag_min < 0:
             raise ValueError("index release lags cannot be negative")
+
+
+def _samples(minutes: float, cadence_s: float) -> int:
+    return max(1, int(round(minutes * 60.0 / cadence_s)))
 
 
 def _rolling_energy(series: pd.Series, window: int) -> pd.Series:
@@ -37,7 +44,7 @@ def _rolling_energy(series: pd.Series, window: int) -> pd.Series:
 
 
 def _rate_of_change(series: pd.Series, cadence_s: float) -> pd.Series:
-    """First derivative in nT/s using the immediately preceding sample."""
+    """First derivative in nT/s using only the immediately preceding sample."""
     return series.diff() / cadence_s
 
 
@@ -47,22 +54,21 @@ def _normalise_index(
     name: str,
     release_lag_min: int,
 ) -> pd.Series:
-    """Align an external index without exposing values before their release time."""
+    """Align an external index and expose missingness explicitly."""
     if values is None:
-        return pd.Series(np.nan, index=target_index, dtype=float)
-
+        return pd.Series(np.nan, index=target_index, dtype=float, name=name)
     if isinstance(values, pd.Series):
         aligned = values.astype(float).copy()
         aligned.index = pd.DatetimeIndex(pd.to_datetime(aligned.index, utc=True))
-        if not aligned.index.is_monotonic_increasing:
-            aligned = aligned.sort_index()
+        if aligned.index.has_duplicates:
+            aligned = aligned.groupby(level=0).last()
+        aligned = aligned.sort_index()
         aligned.index = aligned.index + pd.Timedelta(minutes=release_lag_min)
-        return aligned.reindex(target_index, method="ffill")
-
+        return aligned.reindex(target_index, method="ffill").rename(name)
     arr = np.asarray(values, dtype=float)
     if len(arr) != len(target_index):
         raise ValueError(f"{name} length must match residual length")
-    return pd.Series(arr, index=target_index, dtype=float)
+    return pd.Series(arr, index=target_index, dtype=float, name=name)
 
 
 def build_features(
@@ -73,12 +79,12 @@ def build_features(
     index: pd.DatetimeIndex | None = None,
     config: FeatureConfig = FeatureConfig(),
 ) -> pd.DataFrame:
-    """Build a causal feature matrix from residual and optional global indices.
+    """Build a causal, missingness-aware feature matrix.
 
-    All rolling statistics use only samples at or before the feature timestamp.
-    Series-valued Kp/Dst inputs are delayed by conservative release lags: three
-    hours for Kp and one hour for Dst. This prevents finalized global indices
-    from leaking into an earlier prediction timestamp.
+    Every feature at timestamp ``t`` is computed from samples at or before
+    ``t``. Kp and Dst series are delayed by their configured release lag.
+    Missing external indices are represented by NaN plus explicit availability
+    and age signals, so the model can distinguish quiet from unavailable.
     """
     if isinstance(residual, pd.Series):
         series = residual.astype(float).copy()
@@ -90,14 +96,12 @@ def build_features(
         values = np.asarray(residual, dtype=float)
         if index is None:
             index = pd.date_range(
-                "1970-01-01",
-                periods=len(values),
-                freq=pd.Timedelta(seconds=config.cadence_s),
-                tz="UTC",
+                "1970-01-01", periods=len(values),
+                freq=pd.Timedelta(seconds=config.cadence_s), tz="UTC"
             )
         if len(index) != len(values):
             raise ValueError("index length must match residual length")
-        series = pd.Series(values, index=index)
+        series = pd.Series(values, index=index, dtype=float)
 
     idx = pd.DatetimeIndex(pd.to_datetime(series.index, utc=True))
     if not idx.is_monotonic_increasing or idx.has_duplicates:
@@ -111,7 +115,7 @@ def build_features(
     frame["residual_dbdt_abs"] = frame["residual_dbdt"].abs()
 
     for minutes in config.windows_min:
-        samples = max(1, int(round(minutes * 60.0 / config.cadence_s)))
+        samples = _samples(minutes, config.cadence_s)
         roll = series.rolling(samples, min_periods=samples)
         prefix = f"{minutes}m"
         frame[f"residual_std_{prefix}"] = roll.std(ddof=0)
@@ -125,30 +129,51 @@ def build_features(
             samples, min_periods=samples
         ).mean()
 
-    max_lag = int(round(config.lookback_hours * 3600.0 / config.cadence_s))
+    persistence_samples = _samples(config.amplitude_window_min, config.cadence_s)
+    frame["persistence_amplitude_nt"] = (
+        series.rolling(persistence_samples, min_periods=persistence_samples).max()
+        - series.rolling(persistence_samples, min_periods=persistence_samples).min()
+    )
+
+    max_lag = _samples(config.lookback_hours * 60.0, config.cadence_s)
     for minutes in (15, 30, 60, 180, 360, 720):
-        lag = max(1, int(round(minutes * 60.0 / config.cadence_s)))
+        lag = _samples(minutes, config.cadence_s)
         if lag <= max_lag:
             frame[f"residual_lag_{minutes}m"] = series.shift(lag)
 
     frame["kp"] = _normalise_index(kp, idx, "kp", config.kp_release_lag_min)
     frame["dst"] = _normalise_index(dst, idx, "dst", config.dst_release_lag_min)
 
-    for minutes in (180, 360, 720):
-        samples = max(1, int(round(minutes * 60.0 / config.cadence_s)))
-        frame[f"kp_mean_{minutes}m"] = frame["kp"].rolling(
-            samples, min_periods=1
-        ).mean()
-        frame[f"kp_max_{minutes}m"] = frame["kp"].rolling(
-            samples, min_periods=1
-        ).max()
-        frame[f"dst_mean_{minutes}m"] = frame["dst"].rolling(
-            samples, min_periods=1
-        ).mean()
-        frame[f"dst_min_{minutes}m"] = frame["dst"].rolling(
-            samples, min_periods=1
-        ).min()
+    for name in ("kp", "dst"):
+        frame[f"{name}_available"] = frame[name].notna().astype(float)
+        observed = pd.Series(frame.index.where(frame[name].notna()), index=idx)
+        last_observed = observed.ffill()
+        frame[f"{name}_age_min"] = (
+            (pd.Series(idx, index=idx) - last_observed).dt.total_seconds() / 60.0
+        ).fillna(1e6)
 
+    for minutes in (180, 360, 720):
+        samples = _samples(minutes, config.cadence_s)
+        for name in ("kp", "dst"):
+            frame[f"{name}_mean_{minutes}m"] = frame[name].rolling(
+                samples, min_periods=1
+            ).mean()
+            if name == "kp":
+                frame[f"kp_max_{minutes}m"] = frame[name].rolling(
+                    samples, min_periods=1
+                ).max()
+            else:
+                frame[f"dst_min_{minutes}m"] = frame[name].rolling(
+                    samples, min_periods=1
+                ).min()
+
+    frame["residual_available"] = series.notna().astype(float)
+    frame["residual_missing_15m"] = 1.0 - series.notna().rolling(
+        _samples(15, config.cadence_s), min_periods=1
+    ).mean()
+    frame["residual_missing_3h"] = 1.0 - series.notna().rolling(
+        _samples(180, config.cadence_s), min_periods=1
+    ).mean()
     frame.replace([np.inf, -np.inf], np.nan, inplace=True)
     return frame
 
@@ -160,45 +185,34 @@ def build_targets(
     horizons_hours: Sequence[int] = (1, 3, 6),
     amplitude_window_min: int = 180,
 ) -> dict[int, pd.Series]:
-    """Create strictly-future disturbance-amplitude targets.
-
-    For timestamp ``t`` and horizon ``h``, the target is the peak-to-peak
-    residual amplitude in ``[t+h, t+h+window)``. No target sample overlaps the
-    feature timestamp, preventing look-ahead leakage at short horizons.
-    """
+    """Create strictly-future peak-to-peak disturbance targets."""
     if isinstance(residual, pd.Series):
         series = residual.astype(float).copy()
         series.index = pd.DatetimeIndex(pd.to_datetime(series.index, utc=True))
     else:
         values = np.asarray(residual, dtype=float)
         index = pd.date_range(
-            "1970-01-01",
-            periods=len(values),
-            freq=pd.Timedelta(seconds=cadence_s),
-            tz="UTC",
+            "1970-01-01", periods=len(values),
+            freq=pd.Timedelta(seconds=cadence_s), tz="UTC"
         )
         series = pd.Series(values, index=index)
-
     if not series.index.is_monotonic_increasing or series.index.has_duplicates:
         raise ValueError("residual timestamps must be unique and increasing")
     if amplitude_window_min <= 0:
         raise ValueError("amplitude_window_min must be positive")
-
-    window = max(1, int(round(amplitude_window_min * 60.0 / cadence_s)))
+    window = _samples(amplitude_window_min, cadence_s)
     rolling_amplitude = (
         series.rolling(window, min_periods=window).max()
         - series.rolling(window, min_periods=window).min()
     )
-
     targets: dict[int, pd.Series] = {}
     for horizon in horizons_hours:
         if horizon <= 0:
             raise ValueError("forecast horizons must be positive")
-        horizon_samples = max(1, int(round(horizon * 3600.0 / cadence_s)))
-        # rolling_amplitude[j] covers [j-window+1, j]. We need the first
-        # target sample at t+h, hence the endpoint is h+window-1.
-        shift = horizon_samples + window - 1
-        targets[int(horizon)] = rolling_amplitude.shift(-shift)
+        horizon_samples = _samples(horizon * 60.0, cadence_s)
+        targets[int(horizon)] = rolling_amplitude.shift(
+            -(horizon_samples + window - 1)
+        )
     return targets
 
 
