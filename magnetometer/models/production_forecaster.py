@@ -7,7 +7,7 @@ breaches at +1h, +3h, and +6h using causal engineered features.
 
 Production safeguards:
 - strict chronological train / calibration / final-test split;
-- time-aware probability calibration (no random CV);
+- calibration is performed on a held-out chronological calibration partition;
 - operating-threshold selection on calibration data only;
 - robust absolute-error regression by default;
 - persistence benchmark;
@@ -22,7 +22,7 @@ import json
 import platform
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Sequence, Tuple
+from typing import Any, Dict, Tuple
 
 import joblib
 import numpy as np
@@ -30,8 +30,14 @@ import pandas as pd
 import sklearn
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
-from sklearn.metrics import brier_score_loss, log_loss, mean_absolute_error, mean_squared_error, precision_recall_fscore_support
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import (
+    brier_score_loss,
+    log_loss,
+    mean_absolute_error,
+    mean_squared_error,
+    precision_recall_fscore_support,
+)
+from sklearn.linear_model import LogisticRegression
 
 from feature_engineering import build_supervised_dataset, make_forecast_features
 
@@ -40,7 +46,7 @@ try:
 except ImportError:  # pragma: no cover
     lgb = None
 
-MODEL_VERSION = "2.0.0"
+MODEL_VERSION = "2.0.1"
 DEFAULT_HORIZONS_HOURS = (1, 3, 6)
 DEFAULT_STORM_THRESHOLD_NT = 35.0
 DEFAULT_FEATURE_WINDOWS_MINUTES = (15, 60, 180, 360)
@@ -65,7 +71,9 @@ def _binary_metrics(y_true: np.ndarray, probability: np.ndarray, threshold: floa
     truth = np.asarray(y_true, dtype=bool)
     prob = np.clip(np.asarray(probability, dtype=float), 0.0, 1.0)
     pred = prob >= threshold
-    precision, recall, f1, _ = precision_recall_fscore_support(truth, pred, average="binary", zero_division=0)
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        truth, pred, average="binary", zero_division=0
+    )
     tn = int(np.sum(~pred & ~truth))
     fp = int(np.sum(pred & ~truth))
     far = float(fp / (fp + tn)) if fp + tn else None
@@ -77,7 +85,9 @@ def _binary_metrics(y_true: np.ndarray, probability: np.ndarray, threshold: floa
         "threshold": float(threshold),
         "brier_score": float(brier_score_loss(truth, prob)) if len(truth) else None,
         "ece": _ece(truth.astype(int), prob),
-        "log_loss": float(log_loss(truth, np.column_stack([1.0 - prob, prob]), labels=[0, 1])) if len(np.unique(truth)) == 2 else None,
+        "log_loss": float(log_loss(truth, np.column_stack([1.0 - prob, prob]), labels=[0, 1]))
+        if len(np.unique(truth)) == 2
+        else None,
         "positive_rate": float(np.mean(truth)) if len(truth) else None,
     }
 
@@ -92,7 +102,9 @@ def _choose_operating_threshold(
     """Choose the highest-recall safe threshold using calibration data only."""
     y = np.asarray(y_true, dtype=int)
     p = np.clip(np.asarray(probability, dtype=float), 0.0, 1.0)
-    candidates = np.unique(np.concatenate([np.linspace(0.05, 0.95, 181), np.quantile(p, np.linspace(0.01, 0.99, 99))]))
+    candidates = np.unique(
+        np.concatenate([np.linspace(0.05, 0.95, 181), np.quantile(p, np.linspace(0.01, 0.99, 99))])
+    )
     feasible: list[tuple[float, float, float, float]] = []
     for threshold in candidates:
         metrics = _binary_metrics(y, p, float(threshold))
@@ -116,7 +128,14 @@ def _choose_operating_threshold(
     fallback: list[tuple[float, float, float, float]] = []
     for threshold in candidates:
         metrics = _binary_metrics(y, p, float(threshold))
-        fallback.append((float(metrics["f1"] or 0.0), float(metrics["precision"] or 0.0), -float(metrics["false_alarm_rate"] if metrics["false_alarm_rate"] is not None else 1.0), float(threshold)))
+        fallback.append(
+            (
+                float(metrics["f1"] or 0.0),
+                float(metrics["precision"] or 0.0),
+                -float(metrics["false_alarm_rate"] if metrics["false_alarm_rate"] is not None else 1.0),
+                float(threshold),
+            )
+        )
     fallback.sort(reverse=True)
     threshold = fallback[0][3]
     return threshold, {
@@ -126,6 +145,45 @@ def _choose_operating_threshold(
         "feasible_candidates": 0,
         "selected_metrics": _binary_metrics(y, p, threshold),
     }
+
+
+class _SigmoidCalibratedClassifier:
+    """Pickle-safe temporal Platt calibration around an already-fitted classifier.
+
+    The base classifier is fitted only on the training partition. The sigmoid is
+    fitted only on the later calibration partition, so no random or overlapping
+    cross-validation is required. This is important because sklearn's
+    ``CalibratedClassifierCV`` internally calls ``cross_val_predict``, which
+    requires test folds to form a complete partition and therefore rejects a
+    ``TimeSeriesSplit`` with a gap.
+    """
+
+    def __init__(self, base: Any) -> None:
+        self.base = base
+        self.calibrator = LogisticRegression(C=1e6, solver="lbfgs", max_iter=1000)
+
+    def _raw_score(self, x: pd.DataFrame | np.ndarray) -> np.ndarray:
+        if hasattr(self.base, "decision_function"):
+            score = np.asarray(self.base.decision_function(x), dtype=float)
+            if score.ndim > 1:
+                score = score[:, -1]
+            return score
+        probability = np.asarray(self.base.predict_proba(x)[:, 1], dtype=float)
+        probability = np.clip(probability, 1e-7, 1.0 - 1e-7)
+        return np.log(probability / (1.0 - probability))
+
+    def fit(self, x_cal: pd.DataFrame, y_cal: np.ndarray) -> "_SigmoidCalibratedClassifier":
+        if np.unique(y_cal).size < 2:
+            raise ValueError("Both storm classes are required for probability calibration.")
+        self.calibrator.fit(self._raw_score(x_cal).reshape(-1, 1), np.asarray(y_cal, dtype=int))
+        return self
+
+    def predict_proba(self, x: pd.DataFrame | np.ndarray) -> np.ndarray:
+        probability = self.calibrator.predict_proba(self._raw_score(x).reshape(-1, 1))[:, 1]
+        return np.column_stack([1.0 - probability, probability])
+
+    def predict(self, x: pd.DataFrame | np.ndarray) -> np.ndarray:
+        return (self.predict_proba(x)[:, 1] >= 0.5).astype(int)
 
 
 @dataclass(frozen=True)
@@ -251,15 +309,25 @@ class GeomagneticForecaster:
         # Never backfill: it would inject future observations into early rows.
         return frame.select_dtypes(include=[np.number]).replace([np.inf, -np.inf], np.nan).ffill()
 
-    def _calibrated_classifier(self, x_train: pd.DataFrame, y_train: np.ndarray) -> Any:
+    def _calibrated_classifier(
+        self,
+        x_train: pd.DataFrame,
+        y_train: np.ndarray,
+        x_cal: pd.DataFrame,
+        y_cal: np.ndarray,
+    ) -> Any:
+        """Fit the classifier causally, then calibrate it on later held-out data.
+
+        The previous implementation passed ``TimeSeriesSplit(gap=...)`` directly
+        to ``CalibratedClassifierCV``. That splitter intentionally leaves the
+        initial gap samples out of every test fold, but ``cross_val_predict``
+        requires the test folds to be a complete partition. The resulting
+        ``cross_val_predict only works for partitions`` exception was therefore
+        deterministic and not a data problem.
+        """
         base = self._classifier()
-        gap = max(1, int(round(self.config.calibration_gap_hours * 3600.0 / 60.0)))
-        n_splits = min(self.config.calibration_splits, max(2, len(x_train) // 500))
-        splitter = TimeSeriesSplit(n_splits=n_splits, gap=gap)
-        try:
-            return CalibratedClassifierCV(estimator=base, method="sigmoid", cv=splitter, ensemble=False).fit(x_train, y_train)
-        except TypeError:  # sklearn < 1.2 compatibility
-            return CalibratedClassifierCV(base_estimator=base, method="sigmoid", cv=splitter, ensemble=False).fit(x_train, y_train)
+        base.fit(x_train, np.asarray(y_train, dtype=int))
+        return _SigmoidCalibratedClassifier(base).fit(x_cal, np.asarray(y_cal, dtype=int))
 
     def fit(self, frame: pd.DataFrame, *, cadence_s: float = 60.0) -> Dict[str, Any]:
         """Fit using strict chronological train/calibration/final-test partitions."""
@@ -288,7 +356,9 @@ class GeomagneticForecaster:
         x_train = x.iloc[:train_end]
         x_cal = x.iloc[train_end:cal_end]
         x_test = x.iloc[cal_end:]
-        self.regressors.clear(); self.classifiers.clear(); self.thresholds.clear()
+        self.regressors.clear()
+        self.classifiers.clear()
+        self.thresholds.clear()
         calibration_report: Dict[str, Any] = {}
         final_report: Dict[str, Any] = {}
 
@@ -301,7 +371,9 @@ class GeomagneticForecaster:
             if train_mask.sum() < 500 or cal_mask.sum() < 200 or test_mask.sum() < 200:
                 raise ValueError(f"Insufficient target coverage for {horizon}h.")
 
-            xtr = x_train.loc[train_mask]; xcal = x_cal.loc[cal_mask]; xtest = x_test.loc[test_mask]
+            xtr = x_train.loc[train_mask]
+            xcal = x_cal.loc[cal_mask]
+            xtest = x_test.loc[test_mask]
             yreg_tr = targets[peak_col].iloc[:train_end][train_mask].to_numpy(float)
             yreg_cal = targets[peak_col].iloc[train_end:cal_end][cal_mask].to_numpy(float)
             yreg_test = targets[peak_col].iloc[cal_end:][test_mask].to_numpy(float)
@@ -315,10 +387,11 @@ class GeomagneticForecaster:
             reg.fit(xtr, yreg_tr)
             cal_reg_pred = np.clip(reg.predict(xcal), 0.0, None)
 
-            clf = self._calibrated_classifier(xtr, ycls_tr)
-            cal_prob = clf.predict_proba(xcal)[:, 1]
+            clf = self._calibrated_classifier(xtr, ycls_tr, xcal, ycls_cal)
+            cal_prob = np.clip(clf.predict_proba(xcal)[:, 1], 0.0, 1.0)
             threshold, threshold_info = _choose_operating_threshold(
-                ycls_cal, cal_prob,
+                ycls_cal,
+                cal_prob,
                 min_precision=self.config.threshold_min_precision,
                 max_far=self.config.threshold_max_false_alarm_rate,
             )
@@ -339,6 +412,7 @@ class GeomagneticForecaster:
                 "regression_mae_nt": float(mean_absolute_error(yreg_cal, cal_reg_pred)),
                 "storm": _binary_metrics(ycls_cal, cal_prob, threshold),
                 "threshold_selection": threshold_info,
+                "method": "chronological_holdout_sigmoid",
             }
             final_report[str(horizon)] = {
                 "samples": int(test_mask.sum()),
@@ -376,10 +450,20 @@ class GeomagneticForecaster:
             "final_test_report": final_report,
         }
         self.fitted = True
-        return {"backend": self.config.backend, "regression_loss": self.config.regression_loss, "calibration": calibration_report, "final_test": final_report}
+        return {
+            "backend": self.config.backend,
+            "regression_loss": self.config.regression_loss,
+            "calibration": calibration_report,
+            "final_test": final_report,
+        }
 
     def _frame_to_matrix(self, frame: pd.DataFrame, cadence_s: float) -> pd.DataFrame:
-        features = make_forecast_features(frame, cadence_s=cadence_s, windows_minutes=self.config.windows_minutes, lags_minutes=self.config.lags_minutes)
+        features = make_forecast_features(
+            frame,
+            cadence_s=cadence_s,
+            windows_minutes=self.config.windows_minutes,
+            lags_minutes=self.config.lags_minutes,
+        )
         missing = [name for name in self.feature_names if name not in features.columns]
         if missing:
             raise ValueError(f"Inference feature schema mismatch: missing {missing}")
@@ -387,32 +471,59 @@ class GeomagneticForecaster:
 
     @staticmethod
     def _tier_from_amplitude(value: float | None) -> str:
-        if value is None or not np.isfinite(value): return "unknown"
+        if value is None or not np.isfinite(value):
+            return "unknown"
         value = abs(float(value))
-        if value >= 200.0: return "severe_storm"
-        if value >= 100.0: return "major_storm"
-        if value >= 35.0: return "minor_storm"
-        if value >= 15.0: return "active"
-        if value >= 10.0: return "unsettled"
+        if value >= 200.0:
+            return "severe_storm"
+        if value >= 100.0:
+            return "major_storm"
+        if value >= 35.0:
+            return "minor_storm"
+        if value >= 15.0:
+            return "active"
+        if value >= 10.0:
+            return "unsettled"
         return "quiet"
 
     @staticmethod
     def _tier_score(tier: str) -> int:
-        return {"unknown": 0, "quiet": 0, "unsettled": 1, "active": 2, "minor_storm": 3, "major_storm": 4, "severe_storm": 5}.get(tier, 0)
+        return {
+            "unknown": 0,
+            "quiet": 0,
+            "unsettled": 1,
+            "active": 2,
+            "minor_storm": 3,
+            "major_storm": 4,
+            "severe_storm": 5,
+        }.get(tier, 0)
 
-    def predict(self, frame: pd.DataFrame, *, cadence_s: float = 60.0, current_rule_tier: str | None = None) -> ForecastResult:
-        if not self.fitted: raise RuntimeError("Forecaster is not fitted or loaded.")
-        if frame.empty: raise ValueError("forecast frame cannot be empty")
+    def predict(
+        self,
+        frame: pd.DataFrame,
+        *,
+        cadence_s: float = 60.0,
+        current_rule_tier: str | None = None,
+    ) -> ForecastResult:
+        if not self.fitted:
+            raise RuntimeError("Forecaster is not fitted or loaded.")
+        if frame.empty:
+            raise ValueError("forecast frame cannot be empty")
         x = self._frame_to_matrix(frame, cadence_s)
         latest = x.iloc[[-1]]
-        current = float(frame["residual"].iloc[-1]) if "residual" in frame and np.isfinite(frame["residual"].iloc[-1]) else None
+        current = (
+            float(frame["residual"].iloc[-1])
+            if "residual" in frame and np.isfinite(frame["residual"].iloc[-1])
+            else None
+        )
         horizons: Dict[str, Dict[str, float | str | bool | None]] = {}
         for horizon in self.config.horizons_hours:
             amplitude = max(0.0, float(self.regressors[int(horizon)].predict(latest)[0]))
             probability = float(np.clip(self.classifiers[int(horizon)].predict_proba(latest)[0, 1], 0.0, 1.0))
             threshold = float(self.thresholds.get(int(horizon), self.config.probability_threshold))
             tier = self._tier_from_amplitude(amplitude)
-            if probability >= threshold and self._tier_score(tier) < 3: tier = "minor_storm"
+            if probability >= threshold and self._tier_score(tier) < 3:
+                tier = "minor_storm"
             confidence = max(probability, 1.0 - probability)
             horizons[str(horizon)] = {
                 "predicted_amplitude_nt": amplitude,
@@ -420,36 +531,82 @@ class GeomagneticForecaster:
                 "storm_probability_threshold": threshold,
                 "model_confidence": confidence if confidence >= self.config.confidence_floor else None,
                 "forecast_tier": tier,
-                "divergence": current_rule_tier is not None and abs(self._tier_score(tier) - self._tier_score(current_rule_tier)) >= 2,
+                "divergence": current_rule_tier is not None
+                and abs(self._tier_score(tier) - self._tier_score(current_rule_tier)) >= 2,
             }
         current_score = self._tier_score(current_rule_tier or "quiet")
         max_score = max((self._tier_score(v["forecast_tier"]) for v in horizons.values()), default=0)
         anomaly_delta = abs(max_score - current_score) / 5.0
-        return ForecastResult(generated_at=frame.index[-1].isoformat(), horizons=horizons, current_residual_nt=current, anomaly_delta=float(anomaly_delta), divergence=bool(anomaly_delta >= 0.40), model_version=MODEL_VERSION)
+        return ForecastResult(
+            generated_at=frame.index[-1].isoformat(),
+            horizons=horizons,
+            current_residual_nt=current,
+            anomaly_delta=float(anomaly_delta),
+            divergence=bool(anomaly_delta >= 0.40),
+            model_version=MODEL_VERSION,
+        )
 
     def save_model(self, path: str | Path) -> None:
-        if not self.fitted: raise RuntimeError("Cannot serialize an unfitted forecaster.")
-        base = Path(path); base.parent.mkdir(parents=True, exist_ok=True)
-        bundle = {"config": asdict(self.config), "feature_names": self.feature_names, "regressors": self.regressors, "classifiers": self.classifiers, "thresholds": self.thresholds, "training_metadata": self.training_metadata, "model_version": MODEL_VERSION}
+        if not self.fitted:
+            raise RuntimeError("Cannot serialize an unfitted forecaster.")
+        base = Path(path)
+        base.parent.mkdir(parents=True, exist_ok=True)
+        bundle = {
+            "config": asdict(self.config),
+            "feature_names": self.feature_names,
+            "regressors": self.regressors,
+            "classifiers": self.classifiers,
+            "thresholds": self.thresholds,
+            "training_metadata": self.training_metadata,
+            "model_version": MODEL_VERSION,
+        }
         joblib.dump(bundle, base.with_suffix(".joblib"), compress=3, protocol=5)
-        base.with_suffix(".json").write_text(json.dumps({"model_version": MODEL_VERSION, "artifact": base.with_suffix(".joblib").name, "config": asdict(self.config), "feature_names": self.feature_names, "thresholds": self.thresholds, "training_metadata": self.training_metadata}, indent=2))
+        base.with_suffix(".json").write_text(
+            json.dumps(
+                {
+                    "model_version": MODEL_VERSION,
+                    "artifact": base.with_suffix(".joblib").name,
+                    "config": asdict(self.config),
+                    "feature_names": self.feature_names,
+                    "thresholds": self.thresholds,
+                    "training_metadata": self.training_metadata,
+                },
+                indent=2,
+            )
+        )
 
     @classmethod
     def load_model(cls, path: str | Path) -> "GeomagneticForecaster":
-        base = Path(path); manifest_path = base.with_suffix(".json"); artifact_path = base.with_suffix(".joblib")
-        if not manifest_path.exists() or not artifact_path.exists(): raise FileNotFoundError(f"Expected {manifest_path} and {artifact_path}")
+        base = Path(path)
+        manifest_path = base.with_suffix(".json")
+        artifact_path = base.with_suffix(".joblib")
+        if not manifest_path.exists() or not artifact_path.exists():
+            raise FileNotFoundError(f"Expected {manifest_path} and {artifact_path}")
         manifest = json.loads(manifest_path.read_text())
-        if manifest.get("model_version") != MODEL_VERSION: raise ValueError(f"Unsupported model version {manifest.get('model_version')!r}; expected {MODEL_VERSION!r}")
+        if manifest.get("model_version") != MODEL_VERSION:
+            raise ValueError(
+                f"Unsupported model version {manifest.get('model_version')!r}; expected {MODEL_VERSION!r}"
+            )
         bundle = joblib.load(artifact_path)
-        model = cls(config=ForecastConfig(**bundle["config"]), feature_names=list(bundle["feature_names"]), regressors=dict(bundle["regressors"]), classifiers=dict(bundle["classifiers"]), thresholds={int(k): float(v) for k, v in bundle.get("thresholds", {}).items()}, fitted=True, training_metadata=dict(bundle.get("training_metadata", {})))
-        if not model.feature_names or set(model.thresholds) != set(model.config.horizons_hours): raise ValueError("Serialized model feature/threshold schema is invalid.")
+        model = cls(
+            config=ForecastConfig(**bundle["config"]),
+            feature_names=list(bundle["feature_names"]),
+            regressors=dict(bundle["regressors"]),
+            classifiers=dict(bundle["classifiers"]),
+            thresholds={int(k): float(v) for k, v in bundle.get("thresholds", {}).items()},
+            fitted=True,
+            training_metadata=dict(bundle.get("training_metadata", {})),
+        )
+        if not model.feature_names or set(model.thresholds) != set(model.config.horizons_hours):
+            raise ValueError("Serialized model feature/threshold schema is invalid.")
         return model
 
 
 def evaluate_forecast(model: GeomagneticForecaster, frame: pd.DataFrame, *, cadence_s: float = 60.0) -> Dict[str, Any]:
     """Return the immutable final-test report recorded during fitting."""
     report = model.training_metadata.get("final_test_report")
-    if report is None: raise ValueError("Model has no recorded final-test report.")
+    if report is None:
+        raise ValueError("Model has no recorded final-test report.")
     return report
 
 
