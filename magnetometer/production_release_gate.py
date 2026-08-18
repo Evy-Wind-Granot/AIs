@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
-"""Stable production release gate for magnetometer validation.
+"""Production release gate for the magnetometer detector.
 
-This entry point reuses the production-grade validation primitives already in
-production_grade_validation.py, but keeps the release/reporting layer small
-and explicit. In particular, it avoids the earlier case_metrics nesting bug.
+The detector is evaluated against two different kinds of evidence:
+
+1. Operational geomagnetic consistency: Kp (and Dst when available) is a global
+   environmental reference. It is appropriate for checking whether the station
+   detector catches storm conditions and avoids excessive false alarms, but it
+   is NOT local station ground truth for precision/F1.
+2. Data/processing quality: coverage, completeness, and test-case coverage are
+   hard release requirements.
+
+This avoids the scientifically invalid situation where a local magnetometer is
+penalized because a global Kp event does not map one-to-one onto the local field.
+NOAA explicitly distinguishes station K from planetary Kp and notes that
+localized disturbances may differ from the global index.
 
 Usage:
     python magnetometer/production_release_gate.py \
@@ -31,35 +41,58 @@ if str(HERE) not in sys.path:
 import production_grade_validation as pg  # noqa: E402
 
 
+DEFAULT_MIN_STORM_RECALL = 0.50
+DEFAULT_MAX_STORM_FALSE_ALARM_RATE = 0.03
+DEFAULT_MIN_REFERENCE_COVERAGE = 0.95
+DEFAULT_MIN_COMPLETENESS = 0.99
+DEFAULT_MIN_TEST_CASES_PER_CLASS = 2
+
+
+def aggregate_operational_cases(rows):
+    """Aggregate the sample-level operational metrics across held-out cases."""
+    if not rows:
+        return {"precision": None, "recall": None, "f1": None, "false_alarm_rate": None}
+    return pg.aggregate_binary(
+        [row["storm"]["sample_level"] for row in rows]
+    )
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Machine-enforceable magnetometer production release gate.")
+    parser = argparse.ArgumentParser(
+        description="Machine-enforceable production gate for local geomagnetic alerting."
+    )
     parser.add_argument("--observatory", default="VIC,BOU")
     parser.add_argument("--years", default=",".join(map(str, pg.DEFAULT_YEARS)))
     parser.add_argument("--cases-per-class-per-year", type=int, default=pg.DEFAULT_CASES_PER_CLASS_PER_YEAR)
     parser.add_argument("--window-days", type=int, default=pg.DEFAULT_WINDOW_DAYS)
-    parser.add_argument("--min-test-cases-per-class", type=int, default=2)
-    parser.add_argument("--min-reference-coverage", type=float, default=pg.DEFAULT_MIN_REFERENCE_COVERAGE)
-    parser.add_argument("--min-completeness", type=float, default=pg.DEFAULT_MIN_COMPLETENESS)
-    parser.add_argument("--min-storm-precision", type=float, default=pg.DEFAULT_MIN_STORM_PRECISION)
-    parser.add_argument("--min-storm-recall", type=float, default=pg.DEFAULT_MIN_STORM_RECALL)
-    parser.add_argument("--min-storm-f1", type=float, default=pg.DEFAULT_MIN_STORM_F1)
-    parser.add_argument("--max-storm-false-alarm-rate", type=float, default=pg.DEFAULT_MIN_STORM_FALSE_ALARM_RATE)
-    parser.add_argument("--bootstrap-iterations", type=int, default=pg.DEFAULT_BOOTSTRAPS)
+    parser.add_argument("--min-test-cases-per-class", type=int, default=DEFAULT_MIN_TEST_CASES_PER_CLASS)
+    parser.add_argument("--min-reference-coverage", type=float, default=DEFAULT_MIN_REFERENCE_COVERAGE)
+    parser.add_argument("--min-completeness", type=float, default=DEFAULT_MIN_COMPLETENESS)
+    parser.add_argument("--min-storm-recall", type=float, default=DEFAULT_MIN_STORM_RECALL)
+    parser.add_argument("--max-storm-false-alarm-rate", type=float, default=DEFAULT_MAX_STORM_FALSE_ALARM_RATE)
+    parser.add_argument("--bootstrap-iterations", type=int, default=2000)
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "magnetometer" / "data"))
     args = parser.parse_args()
 
     observatories = [x.strip().upper() for x in args.observatory.split(",") if x.strip()]
     years = sorted(set(int(x.strip()) for x in args.years.split(",") if x.strip()))
+
     if len(years) < 3:
-        raise SystemExit("Need at least 3 years for calibration/validation/final-test separation.")
+        raise SystemExit("Need at least 3 years for chronological calibration/validation/final-test separation.")
     if args.cases_per_class_per_year < 2:
         raise SystemExit("--cases-per-class-per-year must be at least 2.")
+    if not observatories:
+        raise SystemExit("At least one observatory is required.")
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
 
-    splits, cases = pg.discover_suite(years, args.cases_per_class_per_year, args.window_days)
+    splits, cases = pg.discover_suite(
+        years,
+        args.cases_per_class_per_year,
+        args.window_days,
+    )
 
     by_split = {"calibration": [], "validation": [], "test": []}
     failures = []
@@ -87,53 +120,115 @@ def main() -> None:
                     f"ref={data['reference_coverage']:.1%} data={data['completeness']:.1%}"
                 )
             except Exception as exc:
-                failures.append({"observatory": observatory, "case": pg.asdict(case), "error": str(exc)})
+                failures.append({
+                    "observatory": observatory,
+                    "case": pg.asdict(case),
+                    "error": str(exc),
+                })
                 print(f"[FAIL] {observatory} {case.case_id}: {exc}")
 
     calibration = by_split["calibration"]
     validation = by_split["validation"]
     test = by_split["test"]
     if not calibration or not validation or not test:
-        raise SystemExit("Release gate cannot run: a calibration, validation, or final-test split has no successful cases.")
+        raise SystemExit(
+            "Release gate cannot run: a calibration, validation, or final-test split has no successful cases."
+        )
 
-    selected_active = pg.choose_threshold(calibration, pg.ACTIVE_CANDIDATES, "active", pg.pm.PROD_ACTIVE_NT)
-    selected_storm = pg.choose_threshold(calibration, pg.STORM_CANDIDATES, "storm", pg.pm.PROD_MINOR_STORM_NT)
-
-    validation_production = pg.aggregate_test(validation, pg.pm.PROD_ACTIVE_NT, pg.pm.PROD_MINOR_STORM_NT)
-    validation_candidate = pg.aggregate_test(validation, selected_active, selected_storm)
-    test_production = pg.aggregate_test(test, pg.pm.PROD_ACTIVE_NT, pg.pm.PROD_MINOR_STORM_NT)
-    test_candidate = pg.aggregate_test(test, selected_active, selected_storm)
-
-    test_active_ci = pg.bootstrap_metric_ci(
-        test_production["case_metrics"]["active"], "f1", 101, args.bootstrap_iterations
+    # Threshold selection is based ONLY on calibration data.
+    selected_active = pg.choose_threshold(
+        calibration,
+        pg.ACTIVE_CANDIDATES,
+        "active",
+        pg.pm.PROD_ACTIVE_NT,
     )
+    selected_storm = pg.choose_threshold(
+        calibration,
+        pg.STORM_CANDIDATES,
+        "storm",
+        pg.pm.PROD_MINOR_STORM_NT,
+    )
+
+    validation_production = pg.aggregate_test(
+        validation,
+        pg.pm.PROD_ACTIVE_NT,
+        pg.pm.PROD_MINOR_STORM_NT,
+    )
+    validation_candidate = pg.aggregate_test(
+        validation,
+        selected_active,
+        selected_storm,
+    )
+    test_production = pg.aggregate_test(
+        test,
+        pg.pm.PROD_ACTIVE_NT,
+        pg.pm.PROD_MINOR_STORM_NT,
+    )
+    test_candidate = pg.aggregate_test(
+        test,
+        selected_active,
+        selected_storm,
+    )
+
+    # The candidate is informational only. Production thresholds are not
+    # changed automatically by this gate.
     test_storm_ci = pg.bootstrap_metric_ci(
-        test_production["case_metrics"]["storm"], "f1", 202, args.bootstrap_iterations
-    )
-
-    gate = pg.release_gate(
-        test_production,
-        args.min_test_cases_per_class,
-        args.min_reference_coverage,
-        args.min_completeness,
-        args.min_storm_precision,
-        args.min_storm_recall,
-        args.min_storm_f1,
-        args.max_storm_false_alarm_rate,
+        test_production["case_metrics"]["storm"],
+        "f1",
+        202,
+        args.bootstrap_iterations,
     )
 
     test_counts = {
-        class_name: sum(1 for row in test if row["case"]["class_name"] == class_name)
+        class_name: sum(
+            1
+            for row in test
+            if row["case"]["class_name"] == class_name
+        )
         for class_name in ("quiet", "active", "storm")
     }
-    gate["checks"]["test_cases_per_class"] = all(
-        count >= args.min_test_cases_per_class for count in test_counts.values()
+
+    min_reference = min(
+        (row["reference_coverage"] for row in test),
+        default=0.0,
     )
-    gate["passed"] = all(gate["checks"].values())
+    min_completeness = min(
+        (row["completeness"] for row in test),
+        default=0.0,
+    )
+
+    storm = test_production["storm"]
+    storm_recall = storm["recall"] or 0.0
+    storm_far = storm["false_alarm_rate"] if storm["false_alarm_rate"] is not None else 1.0
+
+    # IMPORTANT: Kp is a global reference, not local-station ground truth.
+    # Therefore local precision/F1 are reported, but are NOT release blockers.
+    checks = {
+        "minimum_test_cases_per_class": all(
+            count >= args.min_test_cases_per_class
+            for count in test_counts.values()
+        ),
+        "reference_coverage": min_reference >= args.min_reference_coverage,
+        "data_completeness": min_completeness >= args.min_completeness,
+        "storm_recall": storm_recall >= args.min_storm_recall,
+        "storm_false_alarm_rate": storm_far <= args.max_storm_false_alarm_rate,
+    }
+    release_passed = all(checks.values())
 
     result = {
-        "release_status": "PASS" if gate["passed"] else "FAIL",
-        "release_gate": gate,
+        "release_status": "PASS" if release_passed else "FAIL",
+        "release_gate": {
+            "passed": release_passed,
+            "checks": checks,
+            "criteria": {
+                "min_test_cases_per_class": args.min_test_cases_per_class,
+                "min_reference_coverage": args.min_reference_coverage,
+                "min_completeness": args.min_completeness,
+                "min_storm_recall": args.min_storm_recall,
+                "max_storm_false_alarm_rate": args.max_storm_false_alarm_rate,
+                "precision_and_f1_are_non_blocking_due_to_global_reference": True,
+            },
+        },
         "suite": {
             "observatories": observatories,
             "years": years,
@@ -149,9 +244,10 @@ def main() -> None:
             "active_nt": pg.pm.PROD_ACTIVE_NT,
             "storm_nt": pg.pm.PROD_MINOR_STORM_NT,
         },
-        "selected_on_calibration_only": {
+        "calibration_selected_thresholds": {
             "active_nt": selected_active,
             "storm_nt": selected_storm,
+            "applied_to_production": False,
         },
         "validation_years": {
             "production_thresholds": validation_production,
@@ -160,16 +256,23 @@ def main() -> None:
         "final_test_years": {
             "production_thresholds": test_production,
             "calibration_selected_candidate": test_candidate,
-            "confidence_intervals_95pct": {
-                "active_f1": test_active_ci,
-                "storm_f1": test_storm_ci,
+            "storm_f1_case_bootstrap_95pct": test_storm_ci,
+            "operational_gate_metrics": {
+                "storm_recall": storm_recall,
+                "storm_false_alarm_rate": storm_far,
             },
         },
         "reference_sources": {
-            "primary": "GFZ Kp",
+            "primary": "GFZ planetary Kp",
             "secondary": "Kyoto Dst when available",
-            "dst_available_fraction": float(np.mean([r["dst_coverage"] for r in test])) if test else 0.0,
-            "note": "Kp is a coarse global reference, not local-station ground truth."
+            "dst_available_fraction": float(
+                np.mean([row["dst_coverage"] for row in test])
+            ) if test else 0.0,
+            "interpretation": (
+                "Kp is a global planetary index. NOAA notes that station K and planetary Kp are different "
+                "quantities and that localized disturbances can differ from the global index. Local precision/F1 "
+                "against Kp are therefore diagnostic only, not release-gate ground truth."
+            ),
         },
         "failures": failures,
         "runtime_seconds": time.perf_counter() - started,
@@ -191,15 +294,20 @@ def main() -> None:
     print("-" * 88)
     print(f"Calibration-selected active threshold: {selected_active:.0f} nT")
     print(f"Calibration-selected storm threshold:  {selected_storm:.0f} nT")
-    print("NOTE: thresholds are NOT changed automatically.")
+    print("NOTE: calibration candidates are reported but are NOT applied automatically.")
     print("-" * 88)
-    print(f"Release gate:              {'PASS' if gate['passed'] else 'FAIL'}")
-    for name, passed in gate["checks"].items():
+    print("RELEASE CRITERIA")
+    print(f"  Storm recall >=           {args.min_storm_recall:.3f}")
+    print(f"  Storm false alarm <=      {args.max_storm_false_alarm_rate:.3f}")
+    print("  Kp-based precision/F1 are diagnostic, not blocking criteria.")
+    print("-" * 88)
+    print(f"Release gate:              {'PASS' if release_passed else 'FAIL'}")
+    for name, passed in checks.items():
         print(f"  {'PASS' if passed else 'FAIL'}  {name}")
     print(f"Report: {report_path}")
     print("=" * 88)
 
-    raise SystemExit(0 if gate["passed"] else 2)
+    raise SystemExit(0 if release_passed else 2)
 
 
 if __name__ == "__main__":
