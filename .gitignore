@@ -2,16 +2,13 @@ venv/
 venv_moirai/
 *.jsonl
 weather_merged_results.json
-run_all_summary_*.json
 
-# Python bytecode and local caches
-__pycache__/
-*.py[cod]
+# Generated caches and Python bytecode.
 .magnetometer_cache/
+**/__pycache__/
+*.pyc
+*.pyo
 
 # Generated geomagnetic ML artifacts and temporary model files.
 magnetometer/models/artifacts/
 *.pkl.tmp
-
-# Runtime detector state is local and reproducible.
-magnetometer/state/*.json

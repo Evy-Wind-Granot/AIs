@@ -1,17 +1,6 @@
 #!/usr/bin/env python3
-"""Run the magnetometer pipeline once against real data and print the stats.
-
-No config file, no --live loop, no JSON/Prometheus output, no state file
-juggling. Just: fetch a window of real INTERMAGNET data (+ Kp/Dst for
-cross-checking), run the classifier, print the numbers.
-
-    python3 magnetometer/demos/run_magnetometer.py --observatory VIC --start-date 2024-05-08 --days 5
-
-The runner deliberately keeps acquisition separate from scientific analysis:
-transport, retries, and historical caching live in ``magnetometer.acquisition``;
-IAGA-2002 parsing lives in ``magnetometer.parsing``; and
-``magnetometer.demos.magnetometer_demo`` provides the analysis API.
-"""
+"""Run the modular magnetometer pipeline once against real data."""
+from __future__ import annotations
 
 import argparse
 import logging
@@ -20,99 +9,77 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
-from magnetometer.demos import magnetometer_demo as md
-from magnetometer.acquisition import (
-    fetch_dst_kyoto,
-    fetch_intermagnet_iaga2002,
-    fetch_kp_gfz,
-)
+from magnetometer import pipeline
+from magnetometer.acquisition import fetch_dst_kyoto, fetch_intermagnet_iaga2002, fetch_kp_gfz
 from magnetometer.parsing import parse_iaga2002_to_dataframe
 
 
 def fetch_window(observatory: str, start_date: str, days: int, warmup_days: float):
-    """Fetch magnetometer data + Kp/Dst concurrently and return aligned inputs."""
     start_dt = pd.to_datetime(start_date, utc=True)
     fetch_start = (start_dt - pd.Timedelta(days=warmup_days)).strftime("%Y-%m-%d")
     total_days = int(days + warmup_days)
-
+    end_guess = (start_dt + pd.Timedelta(days=days)).strftime("%Y-%m-%d")
     with ThreadPoolExecutor(max_workers=3) as pool:
-        mag_future = pool.submit(
-            fetch_intermagnet_iaga2002,
-            observatory=observatory,
-            start_date=fetch_start,
-            duration_days=total_days,
-        )
-        # Kp needs the fetch window, which we already know without waiting on
-        # the magnetometer download, so kick it off in parallel.
-        end_guess = (start_dt + pd.Timedelta(days=days)).strftime("%Y-%m-%d")
+        mag_future = pool.submit(fetch_intermagnet_iaga2002, observatory, fetch_start, total_days)
         kp_future = pool.submit(fetch_kp_gfz, fetch_start, end_guess)
-
         mag_text = mag_future.result()
-        df = parse_iaga2002_to_dataframe(mag_text)
-        if df is None or df.empty:
+        frame = parse_iaga2002_to_dataframe(mag_text)
+        if frame.empty:
             raise RuntimeError(f"No magnetometer data returned for {observatory}")
-
-        months = sorted({(t.year, t.month) for t in df.index})
-        dst_parts = list(pool.map(fetch_dst_kyoto, months))
-
-    kp = None
+        dst_parts = list(pool.map(fetch_dst_kyoto, sorted({(ts.year, ts.month) for ts in frame.index})))
     try:
         kp = kp_future.result()
-    except Exception as e:
-        print(f"  (Kp unavailable: {e})", file=sys.stderr)
-
-    dst_parts = [p for p in dst_parts if p is not None]
+    except Exception as exc:
+        print(f"(Kp unavailable: {exc})", file=sys.stderr)
+        kp = None
+    dst_parts = [part for part in dst_parts if part is not None and not part.empty]
     dst = pd.concat(dst_parts).sort_index() if dst_parts else None
-
-    return df, start_dt, kp, dst
+    return frame, start_dt, kp, dst
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--observatory", default="VIC")
-    ap.add_argument("--start-date", default="2024-05-08")
-    ap.add_argument("--days", type=int, default=5)
-    ap.add_argument("--warmup-days", type=float, default=3)
-    ap.add_argument("--column", default="x_nt")
-    ap.add_argument("--quiet-log", action="store_true", help="Suppress pipeline INFO logs")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--observatory", default="VIC")
+    parser.add_argument("--start-date", default="2024-05-08")
+    parser.add_argument("--days", type=int, default=5)
+    parser.add_argument("--warmup-days", type=float, default=3)
+    parser.add_argument("--column", default="x_nt")
+    parser.add_argument("--quiet-log", action="store_true")
+    args = parser.parse_args()
 
-    md.setup_logging(level=logging.WARNING if args.quiet_log else logging.INFO)
+    # The modular pipeline owns logging; configure it through its CLI helper.
+    from magnetometer.pipeline.cli import setup_logging
+    setup_logging(level=logging.WARNING if args.quiet_log else logging.INFO)
 
-    df, start_dt, kp, dst = fetch_window(
-        args.observatory, args.start_date, args.days, args.warmup_days
-    )
+    frame, start_dt, kp, dst = fetch_window(args.observatory, args.start_date, args.days, args.warmup_days)
+    if args.column not in frame.columns:
+        raise RuntimeError(f"Column {args.column!r} is not present in {list(frame.columns)}")
 
-    result = md.run_analysis(
-        df[args.column].to_numpy(),
-        60,
+    result = pipeline.run_analysis(
+        frame[args.column].to_numpy(),
+        60.0,
         label=f"{args.observatory} {args.start_date}",
-        start_time=pd.to_datetime(df.index.min()).to_pydatetime(),
+        start_time=pd.to_datetime(frame.index.min(), utc=True).to_pydatetime(),
         analysis_start_time=start_dt.to_pydatetime(),
         dst_series=dst,
         kp_series=kp,
         observatory=args.observatory,
     )
-
     if result["status"] != "ok":
         print(f"\nRun did not pass the data-quality gate: status={result['status']}")
-        print("Try a different window, or drop --warmup-days if data is sparse.")
         return 1
 
     print(f"\n=== {args.observatory} {args.start_date} (+{args.days}d) ===")
     print("\nValidation metrics:")
-    for k, v in result["metrics"].items():
-        print(f"  {k:28s} {v:.4f}" if isinstance(v, float) else f"  {k:28s} {v}")
-
+    for key, value in result["metrics"].items():
+        print(f"  {key:28s} {value:.4f}" if isinstance(value, float) else f"  {key:28s} {value}")
     print("\nActivity flag breakdown:")
     for level, count in result["flag_counts"].items():
         print(f"  {level:12s} {count}")
-
     health = result.get("health", {})
     print(f"\nHealth: {'OK' if health.get('healthy') else 'issues found'}")
     for check, ok in (health.get("checks") or {}).items():
         print(f"  {check:24s} {'ok' if ok else 'FAILED'}")
-
     return 0
 
 
