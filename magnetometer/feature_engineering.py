@@ -9,8 +9,7 @@ No feature at timestamp ``t`` reads observations after ``t``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, Sequence, Tuple
+from typing import Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -82,8 +81,8 @@ def make_forecast_features(
     out["kp_available"] = kp.notna().astype(float)
     out["dst_available"] = dst.notna().astype(float)
 
-    # Forward-fill external indices only. Never interpolate them backwards or
-    # manufacture values before the first known reference observation.
+    # External indices are step functions. Forward fill is causal; no backward
+    # fill or interpolation is allowed because it can leak later reference data.
     out["kp"] = out["kp"].ffill()
     out["dst"] = out["dst"].ffill()
 
@@ -92,25 +91,14 @@ def make_forecast_features(
             raise ValueError("window sizes must be positive")
         w = _window_samples(minutes, cadence)
         label = f"{minutes}m"
-        out[f"residual_std_{label}"] = residual.rolling(
-            w, min_periods=max(2, w // 3)
-        ).std()
-        out[f"residual_ptp_{label}"] = residual.rolling(
-            w, min_periods=max(2, w // 3)
-        ).max() - residual.rolling(w, min_periods=max(2, w // 3)).min()
+        min_periods = max(2, w // 3)
+        out[f"residual_std_{label}"] = residual.rolling(w, min_periods=min_periods).std()
+        out[f"residual_ptp_{label}"] = residual.rolling(w, min_periods=min_periods).max() - residual.rolling(w, min_periods=min_periods).min()
         out[f"residual_energy_{label}"] = _rolling_energy(residual, w)
-        out[f"abs_residual_mean_{label}"] = residual.abs().rolling(
-            w, min_periods=max(2, w // 3)
-        ).mean()
-        out[f"abs_residual_max_{label}"] = residual.abs().rolling(
-            w, min_periods=max(2, w // 3)
-        ).max()
-        out[f"dbdt_std_{label}"] = out["dbdt"].rolling(
-            w, min_periods=max(2, w // 3)
-        ).std()
-        out[f"dbdt_max_{label}"] = out["dbdt_abs"].rolling(
-            w, min_periods=max(2, w // 3)
-        ).max()
+        out[f"abs_residual_mean_{label}"] = residual.abs().rolling(w, min_periods=min_periods).mean()
+        out[f"abs_residual_max_{label}"] = residual.abs().rolling(w, min_periods=min_periods).max()
+        out[f"dbdt_std_{label}"] = out["dbdt"].rolling(w, min_periods=min_periods).std()
+        out[f"dbdt_max_{label}"] = out["dbdt_abs"].rolling(w, min_periods=min_periods).max()
 
     for minutes in sorted(set(int(v) for v in lags_minutes)):
         if minutes <= 0:
@@ -119,9 +107,6 @@ def make_forecast_features(
         out[f"residual_lag_{minutes}m"] = residual.shift(lag)
         out[f"dbdt_lag_{minutes}m"] = out["dbdt"].shift(lag)
 
-    # Local solar-time harmonics help capture residual diurnal structure while
-    # preserving the physical QDC layer rather than asking the ML model to
-    # rediscover all deterministic periodic structure from scratch.
     utc_hours = (
         frame.index.hour.to_numpy(dtype=float)
         + frame.index.minute.to_numpy(dtype=float) / 60.0
@@ -133,6 +118,9 @@ def make_forecast_features(
     out["utc_cos_12h"] = np.cos(2.0 * np.pi * utc_hours / 12.0)
 
     out = out.replace([np.inf, -np.inf], np.nan)
+    # Finish only with causal propagation/defaults. This makes the serialized
+    # model deterministic without using future rows to fill warm-up windows.
+    out = out.ffill().fillna(0.0)
     return out
 
 
@@ -159,11 +147,8 @@ def make_future_targets(
         if horizon <= 0:
             raise ValueError("horizons must be positive")
         steps = max(1, int(round(horizon * 3600.0 / cadence)))
-        future = pd.concat(
-            [x.shift(-offset) for offset in range(1, steps + 1)], axis=1
-        )
+        future = pd.concat([x.shift(-offset) for offset in range(1, steps + 1)], axis=1)
         peak = future.max(axis=1, skipna=True)
-        # A target is valid only when the complete forecast horizon exists.
         enough_future = x.shift(-steps).notna()
         peak = peak.where(enough_future)
         out[f"target_peak_abs_{horizon}h"] = peak
@@ -183,18 +168,8 @@ def build_supervised_dataset(
     storm_threshold_nt: float = 35.0,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Return causally engineered features and horizon-aligned targets."""
-    features = make_forecast_features(
-        frame,
-        cadence_s=cadence_s,
-        windows_minutes=windows_minutes,
-        lags_minutes=lags_minutes,
-    )
-    targets = make_future_targets(
-        _safe_series(frame, "residual"),
-        cadence_s=cadence_s,
-        horizons_hours=horizons_hours,
-        storm_threshold_nt=storm_threshold_nt,
-    )
+    features = make_forecast_features(frame, cadence_s=cadence_s, windows_minutes=windows_minutes, lags_minutes=lags_minutes)
+    targets = make_future_targets(_safe_series(frame, "residual"), cadence_s=cadence_s, horizons_hours=horizons_hours, storm_threshold_nt=storm_threshold_nt)
     common = features.index.intersection(targets.index)
     return features.loc[common], targets.loc[common]
 
