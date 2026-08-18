@@ -62,7 +62,7 @@ class FeatureTests(unittest.TestCase):
         changed_frame = build_features(changed, config=cfg)
         pd.testing.assert_frame_equal(original.iloc[:-1], changed_frame.iloc[:-1])
 
-    def test_future_targets_do_not_use_present_or_past_samples(self) -> None:
+    def test_future_target_starts_after_horizon(self) -> None:
         targets = build_targets(
             self.residual,
             horizons_hours=(1,),
@@ -70,6 +70,24 @@ class FeatureTests(unittest.TestCase):
         )
         changed = self.residual.copy()
         changed.iloc[30] += 10000.0
+        changed_targets = build_targets(
+            changed,
+            horizons_hours=(1,),
+            amplitude_window_min=30,
+        )
+        self.assertAlmostEqual(
+            float(targets[1].iloc[0]),
+            float(changed_targets[1].iloc[0]),
+        )
+
+    def test_future_target_window_is_strictly_after_horizon(self) -> None:
+        targets = build_targets(
+            self.residual,
+            horizons_hours=(1,),
+            amplitude_window_min=30,
+        )
+        changed = self.residual.copy()
+        changed.iloc[59] += 10000.0
         changed_targets = build_targets(
             changed,
             horizons_hours=(1,),
