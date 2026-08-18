@@ -64,7 +64,13 @@ def _set_deterministic_hybrid(result: Dict[str, Any]) -> None:
         "real_time": {"tier": current, "source": "deterministic_qdc"},
         "forecasted_status": {},
         "model_confidence": {},
-        "divergence": {"tier_delta": 0, "significant": False, "direction": "none"},
+        "divergence": {
+            "tier_delta": 0,
+            "signed_tier_delta": 0,
+            "significant": False,
+            "direction": "none",
+            "anomaly_delta": 0,
+        },
     }
 
 
@@ -85,14 +91,19 @@ def _attach_ml_forecast(
     default_artifact = Path("models") / "artifacts" / f"{observatory.lower()}_forecaster.pkl"
     artifact = Path(os.environ.get("MAGNETOMETER_FORECAST_MODEL", str(default_artifact)))
     if not artifact.exists():
-        result["forecast"] = {"enabled": False, "status": "model_not_trained", "artifact": str(artifact)}
+        result["forecast"] = {
+            "enabled": False,
+            "status": "model_not_trained",
+            "artifact": str(artifact),
+        }
         return result
 
     try:
         from models.forecaster import build_training_data, load_model
 
         model = load_model(artifact)
-        if model.training_metadata.get("production_gate") != "passed":
+        health = model.health_check()
+        if health.get("production_gate") != "passed":
             raise RuntimeError("forecast artifact is not production-approved; retrain until the production gate passes")
 
         residual = np.asarray(result.get("residual"), dtype=float)
@@ -118,8 +129,11 @@ def _attach_ml_forecast(
             return pd.Series(values, index=index)
 
         features, _ = build_training_data(
-            residual_series, align(kp_series), align(dst_series),
-            cadence_s=cadence_s, config=model.config,
+            residual_series,
+            align(kp_series),
+            align(dst_series),
+            cadence_s=cadence_s,
+            config=model.config,
         )
         forecasts = model.predict(features)
         flags = np.asarray(result.get("flags", []), dtype=object)
@@ -144,9 +158,11 @@ def _attach_ml_forecast(
             "enabled": True,
             "status": "ok",
             "artifact": str(artifact),
+            "model_health": health,
             "horizons": {str(k): v for k, v in forecasts.items()},
             "current_tier": current,
-            "max_tier_delta": int(max_signed),
+            "max_tier_delta": int(max_abs),
+            "signed_tier_delta": int(max_signed),
             "early_warning": bool(max_signed >= 2),
         }
         result["hybrid"] = {
@@ -158,12 +174,16 @@ def _attach_ml_forecast(
                 "signed_tier_delta": int(max_signed),
                 "significant": bool(max_abs >= 2),
                 "direction": direction,
+                "anomaly_delta": int(max_abs),
             },
         }
     except Exception as exc:  # pragma: no cover - deployment failure path
         _legacy.logger.exception("ML forecast unavailable; deterministic result retained")
         result["forecast"] = {
-            "enabled": False, "status": "inference_error", "error": str(exc), "artifact": str(artifact)
+            "enabled": False,
+            "status": "inference_error",
+            "error": str(exc),
+            "artifact": str(artifact),
         }
     return result
 
