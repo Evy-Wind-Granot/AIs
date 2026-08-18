@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""
-Production-grade magnetometer validation harness.
+"""Production magnetometer metrics and validation primitives.
 
-This benchmark evaluates the production magnetometer policy. It shares the
-thresholds with magnetometer_demo.py and applies the same persistent detector
-logic for scoring, so the release gate measures the actual production policy.
+The module is intentionally dependency-light and shares production thresholds
+with ``magnetometer_demo.py``. The scoring path applies the same smoothed,
+persistent detection policy used by the production detector.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -14,9 +12,8 @@ import json
 import math
 import sys
 import time
-from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -26,7 +23,7 @@ REPO_ROOT = HERE.parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from magnetometer_demo import (
+from magnetometer_demo import (  # noqa: E402
     ANOMALY_DELTA_NT,
     PROD_ACTIVE_NT,
     PROD_MAJOR_STORM_NT,
@@ -41,39 +38,23 @@ from magnetometer_demo import (
     robust_harmonic_baseline,
 )
 
-DEFAULT_YEARS = (2023, 2024, 2025)
-DEFAULT_CLASSES = ("quiet", "active", "storm")
-DEFAULT_CASES_PER_CLASS = 2
-DEFAULT_WINDOW_DAYS = 7
 
-@dataclass(frozen=True)
-class SuiteCase:
-    case_id: str
-    start_date: str
-    days: int
-    class_name: str
-
-
-def safe_float(value: Any) -> Optional[float]:
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
+def finite(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    return values[np.isfinite(values)]
 
 
 def finite_values(values: np.ndarray) -> np.ndarray:
-    values = np.asarray(values, dtype=float)
-    return values[np.isfinite(values)]
+    return finite(values)
 
 
 def binary_metrics(pred: np.ndarray, truth: np.ndarray) -> Dict[str, Any]:
     pred = np.asarray(pred, dtype=bool)
     truth = np.asarray(truth, dtype=bool)
-    tp = int(np.sum(pred & truth))
-    tn = int(np.sum(~pred & ~truth))
-    fp = int(np.sum(pred & ~truth))
-    fn = int(np.sum(~pred & truth))
+    if pred.shape != truth.shape:
+        raise ValueError("pred and truth must have matching shapes")
+    tp = int(np.sum(pred & truth)); tn = int(np.sum(~pred & ~truth))
+    fp = int(np.sum(pred & ~truth)); fn = int(np.sum(~pred & truth))
     total = tp + tn + fp + fn
 
     def div(a: float, b: float) -> Optional[float]:
@@ -84,46 +65,42 @@ def binary_metrics(pred: np.ndarray, truth: np.ndarray) -> Dict[str, Any]:
     specificity = div(tn, tn + fp)
     f1 = div(2 * precision * recall, precision + recall) if precision is not None and recall is not None else None
     return {
-        "samples": total,
-        "positive_truth_samples": tp + fn,
-        "positive_prediction_samples": tp + fp,
-        "tp": tp, "tn": tn, "fp": fp, "fn": fn,
-        "accuracy": div(tp + tn, total),
-        "balanced_accuracy": (float((recall + specificity) / 2) if recall is not None and specificity is not None else None),
+        "samples": total, "tp": tp, "tn": tn, "fp": fp, "fn": fn,
+        "positive_truth_samples": tp + fn, "positive_prediction_samples": tp + fp,
         "precision": precision, "recall": recall, "specificity": specificity,
-        "f1": f1,
-        "false_alarm_rate": div(fp, fp + tn),
-        "miss_rate": div(fn, fn + tp),
+        "f1": f1, "false_alarm_rate": div(fp, fp + tn), "miss_rate": div(fn, fn + tp),
+        "accuracy": div(tp + tn, total),
+        "balanced_accuracy": ((recall + specificity) / 2 if recall is not None and specificity is not None else None),
     }
 
 
-def confusion_counts(metrics: Sequence[Dict[str, Any]]) -> Dict[str, int]:
-    return {key: int(sum(int(m.get(key, 0) or 0) for m in metrics)) for key in ("tp", "tn", "fp", "fn")}
+def aggregate_binary(metrics: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    return aggregate_binary_metrics(metrics)
 
 
 def aggregate_binary_metrics(metrics: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    counts = confusion_counts(metrics)
-    tp, tn, fp, fn = counts.values()
+    tp = sum(int(m.get("tp", 0) or 0) for m in metrics)
+    tn = sum(int(m.get("tn", 0) or 0) for m in metrics)
+    fp = sum(int(m.get("fp", 0) or 0) for m in metrics)
+    fn = sum(int(m.get("fn", 0) or 0) for m in metrics)
+    return binary_metrics_from_counts(tp, tn, fp, fn)
+
+
+def binary_metrics_from_counts(tp: int, tn: int, fp: int, fn: int) -> Dict[str, Any]:
     total = tp + tn + fp + fn
 
     def div(a: float, b: float) -> Optional[float]:
         return float(a / b) if b else None
 
-    precision = div(tp, tp + fp)
-    recall = div(tp, tp + fn)
-    specificity = div(tn, tn + fp)
+    precision = div(tp, tp + fp); recall = div(tp, tp + fn); specificity = div(tn, tn + fp)
     f1 = div(2 * precision * recall, precision + recall) if precision is not None and recall is not None else None
     return {
-        "samples": total,
-        "positive_truth_samples": tp + fn,
-        "positive_prediction_samples": tp + fp,
-        **counts,
-        "accuracy": div(tp + tn, total),
-        "balanced_accuracy": (float((recall + specificity) / 2) if recall is not None and specificity is not None else None),
+        "samples": total, "tp": tp, "tn": tn, "fp": fp, "fn": fn,
+        "positive_truth_samples": tp + fn, "positive_prediction_samples": tp + fp,
         "precision": precision, "recall": recall, "specificity": specificity,
-        "f1": f1,
-        "false_alarm_rate": div(fp, fp + tn),
-        "miss_rate": div(fn, fn + tp),
+        "f1": f1, "false_alarm_rate": div(fp, fp + tn), "miss_rate": div(fn, fn + tp),
+        "accuracy": div(tp + tn, total),
+        "balanced_accuracy": ((recall + specificity) / 2 if recall is not None and specificity is not None else None),
     }
 
 
@@ -154,110 +131,60 @@ def compute_qdc_baseline(x: np.ndarray, cadence_s: float) -> Tuple[np.ndarray, n
             seg_base = build_design_matrix(t_seg, t_min, t_max) @ last_good_coeffs
         elif storm_frac <= 0.05:
             last_good_coeffs = coeffs
-        w_win = np.hanning(end - start)
-        baseline[start:end] += seg_base * w_win
-        weights[start:end] += w_win
+        w = np.hanning(end - start)
+        baseline[start:end] += seg_base * w
+        weights[start:end] += w
 
     mask = weights > 0
-    finite_x = finite_values(x)
-    fallback = float(np.median(finite_x)) if finite_x.size else 0.0
+    fallback = float(np.median(finite(x))) if finite(x).size else 0.0
     baseline[mask] /= weights[mask]
     baseline[~mask] = fallback
     return baseline, x - baseline
 
 
-def fetch_global_reference(start_time: pd.Timestamp, end_time: pd.Timestamp, n: int, cadence_s: float) -> Tuple[pd.Series, pd.Series, Dict[str, Any]]:
-    kp = pd.Series(dtype=float)
-    dst = pd.Series(dtype=float)
-    kp_error = None
-    dst_failures: List[str] = []
-    try:
-        kp = fetch_kp_gfz(start_time.strftime("%Y-%m-%d"), end_time.strftime("%Y-%m-%d"))
-    except Exception as exc:
-        kp_error = str(exc)
-    periods = pd.period_range(start=start_time.strftime("%Y-%m"), end=end_time.strftime("%Y-%m"), freq="M")
-    dst_parts = []
-    for period in periods:
-        try:
-            part = fetch_dst_kyoto(int(period.year), int(period.month))
-        except Exception as exc:
-            part = None
-            dst_failures.append(f"{period}: {exc}")
-        if part is not None and not part.empty:
-            dst_parts.append(part)
-        else:
-            dst_failures.append(str(period))
-    if dst_parts:
-        dst = pd.concat(dst_parts).sort_index()
-    target_index = pd.date_range(start=start_time, periods=n, freq=pd.Timedelta(seconds=cadence_s), tz="UTC")
-    tolerance = pd.Timedelta("3h")
-    kp_aligned = kp.reindex(target_index, method="ffill", tolerance=tolerance) if not kp.empty else pd.Series(np.nan, index=target_index)
-    dst_aligned = dst.reindex(target_index, method="ffill", tolerance=tolerance) if not dst.empty else pd.Series(np.nan, index=target_index)
-    return kp_aligned, dst_aligned, {
-        "kp_fetch_ok": kp_error is None,
-        "kp_error": kp_error,
-        "dst_months_requested": len(periods),
-        "dst_months_with_data": len(dst_parts),
-        "dst_failures": dst_failures,
-    }
-
-
 def reference_masks(kp: pd.Series, dst: pd.Series) -> Dict[str, np.ndarray]:
-    kp_values = kp.to_numpy(dtype=float)
-    dst_values = dst.to_numpy(dtype=float)
-    kp_known = np.isfinite(kp_values)
-    dst_known = np.isfinite(dst_values)
-    known = kp_known | dst_known
+    kp_values = kp.to_numpy(dtype=float); dst_values = dst.to_numpy(dtype=float)
+    kp_known = np.isfinite(kp_values); dst_known = np.isfinite(dst_values); known = kp_known | dst_known
     active = ((kp_known & (kp_values >= 4.0)) | (dst_known & (dst_values < -30.0))) & known
     storm = ((kp_known & (kp_values >= 6.0)) | (dst_known & (dst_values < -50.0))) & known
     return {"known": known, "kp_known": kp_known, "dst_known": dst_known, "active": active, "storm": storm}
 
 
-def persistent_mask(mask: np.ndarray, min_samples: int) -> np.ndarray:
+def _persistent_mask(mask: np.ndarray, min_samples: int) -> np.ndarray:
     mask = np.asarray(mask, dtype=bool)
-    if mask.size == 0 or min_samples <= 1:
-        return mask.copy()
     out = np.zeros_like(mask)
-    start = None
-    for i, value in enumerate(np.r_[mask, False]):
-        if value and start is None:
-            start = i
-        elif not value and start is not None:
-            if i - start >= min_samples:
-                out[start:i] = True
-            start = None
+    run = 0
+    for i, value in enumerate(mask):
+        run = run + 1 if value else 0
+        if run >= min_samples:
+            out[i - min_samples + 1:i + 1] = True
     return out
 
 
 def production_detection_masks(residual: np.ndarray, cadence_s: float, active_threshold: float, storm_threshold: float) -> Tuple[np.ndarray, np.ndarray]:
     magnitude = np.abs(np.asarray(residual, dtype=float))
-    smooth_samples = max(1, int(round(15 * 60 / max(cadence_s, 1.0))))
-    smooth_samples = min(smooth_samples, 31)
-    if smooth_samples % 2 == 0:
-        smooth_samples += 1
-    smooth = pd.Series(magnitude).rolling(smooth_samples, center=True, min_periods=1).median().to_numpy()
+    win = max(1, min(31, int(round(15 * 60 / max(cadence_s, 1.0)))))
+    if win % 2 == 0:
+        win += 1
+    smooth = pd.Series(magnitude).rolling(win, center=True, min_periods=1).median().to_numpy()
     active_min = max(1, int(round(10 * 60 / max(cadence_s, 1.0))))
     storm_min = max(1, int(round(15 * 60 / max(cadence_s, 1.0))))
-    active = persistent_mask(smooth > active_threshold, active_min)
-    storm = persistent_mask(smooth > storm_threshold, storm_min)
-    return active, storm
+    return _persistent_mask(smooth > active_threshold, active_min), _persistent_mask(smooth > storm_threshold, storm_min)
 
 
 def bool_events(mask: np.ndarray, cadence_s: float, merge_gap_s: float = 0.0, min_duration_s: float = 0.0) -> List[Tuple[int, int]]:
     mask = np.asarray(mask, dtype=bool).copy()
-    if mask.size == 0:
+    if not mask.size:
         return []
-    max_gap = max(0, int(round(merge_gap_s / cadence_s)))
-    if max_gap > 0:
+    gap = max(0, int(round(merge_gap_s / cadence_s)))
+    if gap:
         padded = np.r_[False, mask, False]
-        starts = np.flatnonzero(~padded[:-1] & padded[1:])
-        ends = np.flatnonzero(padded[:-1] & ~padded[1:])
+        starts = np.flatnonzero(~padded[:-1] & padded[1:]); ends = np.flatnonzero(padded[:-1] & ~padded[1:])
         for i in range(len(starts) - 1):
-            if starts[i + 1] - ends[i] <= max_gap:
+            if starts[i + 1] - ends[i] <= gap:
                 mask[ends[i]:starts[i + 1]] = True
     padded = np.r_[False, mask, False]
-    starts = np.flatnonzero(~padded[:-1] & padded[1:])
-    ends = np.flatnonzero(padded[:-1] & ~padded[1:])
+    starts = np.flatnonzero(~padded[:-1] & padded[1:]); ends = np.flatnonzero(padded[:-1] & ~padded[1:])
     min_len = max(1, int(math.ceil(min_duration_s / cadence_s)))
     return [(int(s), int(e)) for s, e in zip(starts, ends) if e - s >= min_len]
 
@@ -267,23 +194,19 @@ def overlap(a: Tuple[int, int], b: Tuple[int, int]) -> int:
 
 
 def match_events(predicted: Sequence[Tuple[int, int]], reference: Sequence[Tuple[int, int]], cadence_s: float) -> Dict[str, Any]:
-    candidates = []
+    pairs = []
     for pi, pred in enumerate(predicted):
         for ri, ref in enumerate(reference):
             ov = overlap(pred, ref)
             if ov > 0:
-                candidates.append((ov, pi, ri))
-    candidates.sort(reverse=True)
-    used_pred, used_ref, matches = set(), set(), []
-    for ov, pi, ri in candidates:
-        if pi in used_pred or ri in used_ref:
+                pairs.append((ov, pi, ri))
+    pairs.sort(reverse=True)
+    used_p, used_r, matches = set(), set(), []
+    for ov, pi, ri in pairs:
+        if pi in used_p or ri in used_r:
             continue
-        used_pred.add(pi); used_ref.add(ri)
-        pred = predicted[pi]; ref = reference[ri]
-        matches.append({"predicted_index": pi, "reference_index": ri, "overlap_seconds": float(ov * cadence_s)})
-    tp = len(matches)
-    fp = len(predicted) - tp
-    fn = len(reference) - tp
+        used_p.add(pi); used_r.add(ri); matches.append({"predicted_index": pi, "reference_index": ri, "overlap_seconds": float(ov * cadence_s)})
+    tp = len(matches); fp = len(predicted) - tp; fn = len(reference) - tp
     precision = tp / (tp + fp) if tp + fp else None
     recall = tp / (tp + fn) if tp + fn else None
     f1 = 2 * precision * recall / (precision + recall) if precision is not None and recall is not None and precision + recall else None
@@ -291,22 +214,67 @@ def match_events(predicted: Sequence[Tuple[int, int]], reference: Sequence[Tuple
 
 
 def score_thresholds(residual: np.ndarray, refs: Dict[str, np.ndarray], cadence_s: float, active_threshold: float, storm_threshold: float) -> Dict[str, Any]:
-    magnitude = np.abs(np.asarray(residual, dtype=float))
-    known = refs["known"] & np.isfinite(magnitude)
-    pred_active, pred_storm = production_detection_masks(magnitude, cadence_s, active_threshold, storm_threshold)
+    known = refs["known"] & np.isfinite(residual)
+    pred_active, pred_storm = production_detection_masks(residual, cadence_s, active_threshold, storm_threshold)
     active_sample = binary_metrics(pred_active[known], refs["active"][known])
     storm_sample = binary_metrics(pred_storm[known], refs["storm"][known])
-    pred_active_events = bool_events(pred_active, cadence_s, merge_gap_s=30 * 60, min_duration_s=5 * 60)
-    ref_active_events = bool_events(refs["active"] & refs["known"], cadence_s, merge_gap_s=6 * 3600, min_duration_s=3 * 3600)
-    pred_storm_events = bool_events(pred_storm, cadence_s, merge_gap_s=30 * 60, min_duration_s=5 * 60)
-    ref_storm_events = bool_events(refs["storm"] & refs["known"], cadence_s, merge_gap_s=6 * 3600, min_duration_s=3 * 3600)
-    return {
-        "active": {"threshold_nt": active_threshold, "sample_level": active_sample, "event_level": match_events(pred_active_events, ref_active_events, cadence_s)},
-        "storm": {"threshold_nt": storm_threshold, "sample_level": storm_sample, "event_level": match_events(pred_storm_events, ref_storm_events, cadence_s)},
-    }
+    active_events = match_events(bool_events(pred_active, cadence_s, 1800, 300), bool_events(refs["active"] & refs["known"], cadence_s, 21600, 10800), cadence_s)
+    storm_events = match_events(bool_events(pred_storm, cadence_s, 1800, 300), bool_events(refs["storm"] & refs["known"], cadence_s, 21600, 10800), cadence_s)
+    return {"active": {"threshold_nt": active_threshold, "sample_level": active_sample, "event_level": active_events}, "storm": {"threshold_nt": storm_threshold, "sample_level": storm_sample, "event_level": storm_events}}
 
 
-def __getattr__(name: str):
-    if name == "ANOMALY_DELTA_NT":
-        return ANOMALY_DELTA_NT
-    raise AttributeError(name)
+def _single_case(observatory: str, start_date: str, days: int, output_dir: Path) -> Dict[str, Any]:
+    raw = fetch_intermagnet_iaga2002(observatory=observatory, start_date=start_date, duration_days=days, samples_per_day="Minute")
+    df = parse_iaga2002_to_dataframe(raw)
+    if df.empty or "f_nt" not in df.columns:
+        raise RuntimeError("No usable total-field data returned")
+    series = pd.to_numeric(df["f_nt"], errors="coerce")
+    idx = series.index
+    cadence = float(idx.to_series().diff().dropna().dt.total_seconds().median())
+    _, residual = compute_qdc_baseline(series.to_numpy(dtype=float), cadence)
+    kp = fetch_kp_gfz(idx[0].strftime("%Y-%m-%d"), idx[-1].strftime("%Y-%m-%d"))
+    dst_parts = []
+    for p in pd.period_range(idx[0].strftime("%Y-%m"), idx[-1].strftime("%Y-%m"), freq="M"):
+        try:
+            d = fetch_dst_kyoto(int(p.year), int(p.month))
+        except Exception:
+            d = None
+        if d is not None:
+            dst_parts.append(d)
+    dst = pd.concat(dst_parts).sort_index() if dst_parts else pd.Series(dtype=float)
+    target = pd.date_range(idx[0], periods=len(idx), freq=pd.Timedelta(seconds=cadence), tz="UTC")
+    kp_aligned = kp.reindex(target, method="ffill", tolerance=pd.Timedelta("3h"))
+    dst_aligned = dst.reindex(target, method="ffill", tolerance=pd.Timedelta("3h")) if not dst.empty else pd.Series(np.nan, index=target)
+    refs = reference_masks(kp_aligned, dst_aligned)
+    score = score_thresholds(residual, refs, cadence, PROD_ACTIVE_NT, PROD_MINOR_STORM_NT)
+    f = finite(residual)
+    report = {"observatory": observatory, "period": start_date, "days": days, "samples": len(series), "valid_samples": int(series.notna().sum()), "cadence_seconds": cadence, "baseline_quality_nt": {"mae": float(np.mean(np.abs(f))), "rmse": float(np.sqrt(np.mean(f ** 2))), "bias": float(np.mean(f)), "median_absolute_error": float(np.median(np.abs(f))), "p95_absolute_error": float(np.percentile(np.abs(f), 95))}, "reference_coverage": {"kp": float(refs["kp_known"].mean()), "dst": float(refs["dst_known"].mean()), "overall": float(refs["known"].mean())}, "production_thresholds": {"active_nt": PROD_ACTIVE_NT, "storm_nt": PROD_MINOR_STORM_NT}, "scores": score}
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / f"magnetometer_performance_{observatory}_{start_date}_{days}d.json").write_text(json.dumps(report, indent=2))
+    return report
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Magnetometer performance benchmark")
+    ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--production-suite", action="store_true")
+    ap.add_argument("--observatory", default="VIC")
+    ap.add_argument("--start-date", default="2024-03-15")
+    ap.add_argument("--days", type=int, default=7)
+    ap.add_argument("--output-dir", default=str(REPO_ROOT / "magnetometer" / "data"))
+    args = ap.parse_args()
+    if args.self_test:
+        assert PROD_ACTIVE_NT == 15.0
+        assert PROD_MINOR_STORM_NT == 35.0
+        assert binary_metrics(np.array([1, 0]), np.array([1, 0]))["f1"] == 1.0
+        print("MAGNETOMETER PERFORMANCE SELF-TEST: PASS")
+        return
+    if args.production_suite:
+        print("Use magnetometer/production_release_gate.py for the production release gate.")
+        return
+    report = _single_case(args.observatory.upper(), args.start_date, args.days, Path(args.output_dir).resolve())
+    s = report["scores"]; print(json.dumps({"active": s["active"]["sample_level"], "storm": s["storm"]["sample_level"]}, indent=2))
+
+
+if __name__ == "__main__":
+    main()
