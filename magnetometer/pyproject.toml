@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "magnetometer-pipeline"
 version = "2.0.0"
 description = "Single-station geomagnetic disturbance pipeline (INTERMAGNET + Kp/Dst)"
-readme = "RUNBOOK.md"
+readme = "docs/MAGNETOMETER_FORECASTING.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24,<3",
@@ -17,26 +17,28 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Structured logs for log aggregation; --log-format json degrades to text
-# without it.
 logging = ["python-json-logger>=2.0,<5"]
 dev = ["flake8==7.1.1", "mypy==2.3.0"]
 
 [project.scripts]
 magnetometer-pipeline = "magnetometer.demos.magnetometer_demo:main_entry"
-magnetometer-calibrate = "calibrate_observatory:main"
+magnetometer-calibrate = "magnetometer.calibration.station.calibrate_station:main"
 
 [tool.setuptools]
-py-modules = [
-    "calibrate_observatory",
-    "calibrate_thresholds",
-    "tune_thresholds",
-    "validate_periods",
-]
 packages = [
     "magnetometer",
     "magnetometer.models",
+    "magnetometer.models.tests",
+    "magnetometer.models.tests.unit",
+    "magnetometer.models.tests.integration",
     "magnetometer.demos",
+    "magnetometer.cli",
     "magnetometer.calibration",
+    "magnetometer.calibration.station",
+    "magnetometer.calibration.thresholds",
+    "magnetometer.calibration.historical",
     "magnetometer.validation",
+    "magnetometer.validation.historical",
+    "magnetometer.validation.periods",
+    "magnetometer.validation.replay",
 ]
