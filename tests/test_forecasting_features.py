@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from magnetometer.features import FeatureConfig, build_features, build_targets
 
@@ -13,14 +14,10 @@ def _series(periods=900):
 def test_features_are_causal_and_include_required_statistics():
     residual = _series(900)
     features = build_features(residual, config=FeatureConfig(windows_min=(15, 60, 180)))
-    required = {
-        "residual", "residual_dbdt", "residual_std_15m", "residual_ptp_60m",
-        "residual_energy_180m", "persistence_amplitude_nt", "residual_lag_60m",
-    }
+    required = {"residual", "residual_dbdt", "residual_std_15m", "residual_ptp_60m", "residual_energy_180m", "persistence_amplitude_nt", "residual_lag_60m"}
     assert required.issubset(features.columns)
-    assert features.loc[residual.index[100], "residual_ptp_15m"] == pytest.approx(
-        residual.iloc[86:101].max() - residual.iloc[86:101].min()
-    )
+    expected = residual.iloc[86:101].max() - residual.iloc[86:101].min()
+    assert features.loc[residual.index[100], "residual_ptp_15m"] == pytest.approx(expected)
 
 
 def test_missing_external_indices_are_explicit():
