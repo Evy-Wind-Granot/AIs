@@ -10,13 +10,21 @@ sys.path.insert(0, str(ROOT / "magnetometer"))
 from models.forecaster import ForecastConfig, GeomagneticForecaster  # noqa: E402
 
 
-def synthetic_frame(n: int = 2600) -> pd.DataFrame:
+def synthetic_frame(n: int = 5000) -> pd.DataFrame:
     idx = pd.date_range("2025-01-01", periods=n, freq="min", tz="UTC")
     rng = np.random.default_rng(123)
     t = np.arange(n, dtype=float)
     residual = 4.0 * np.sin(t / 31.0) + rng.normal(0, 1.0, n)
-    # Several sustained future peaks so every horizon has both classes.
-    for start, stop, amp in ((500, 620, 70), (1100, 1230, 90), (1800, 1950, 55)):
+    # Place sustained events across train, calibration, and final-test partitions.
+    # The 6h target needs 360 future samples, so the fixture must be long enough
+    # to retain >=200 valid target rows in the final test partition.
+    for start, stop, amp in (
+        (700, 820, 70),
+        (1800, 1950, 90),
+        (3000, 3150, 55),
+        (4000, 4150, 75),
+        (4650, 4800, 85),
+    ):
         residual[start:stop] += amp
     return pd.DataFrame({"residual": residual, "kp": 2.0, "dst": -10.0}, index=idx)
 
@@ -38,7 +46,7 @@ def test_forecaster_fit_predict_and_roundtrip(tmp_path: Path) -> None:
     model_path = tmp_path / "forecaster"
     model.save_model(model_path)
     loaded = GeomagneticForecaster.load_model(model_path)
-    loaded_result = loaded.predict(frame.tail(720), cadence_s=60.0, current_rule_tier="quiet")
+    loaded_result = loaded.predict(frame.tail(720), cadence_s=60.0)
     for horizon in result.horizons:
         assert np.isfinite(float(loaded_result.horizons[horizon]["predicted_amplitude_nt"]))
         assert abs(
