@@ -1,10 +1,12 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from magnetometer.features import FeatureConfig, build_features, build_targets
-from models.forecaster import ForecastConfig, GeomagneticForecaster
+from models.forecaster import ForecastConfig, GeomagneticForecaster, load_model, save_model
 
 
 def _dataset(periods=1400):
@@ -27,8 +29,11 @@ class ForecasterTests(unittest.TestCase):
         result = model.predict(features.iloc[1100:])
         self.assertIn(1, result)
         self.assertGreaterEqual(result[1]["predicted_amplitude_nt"], 0)
+        self.assertGreaterEqual(result[1]["persistence_amplitude_nt"], 0)
+        self.assertTrue(np.isfinite(result[1]["model_delta_nt"]))
         self.assertTrue(0.0 <= result[1]["storm_probability"] <= 1.0)
         self.assertTrue(0.0 <= result[1]["confidence"] <= 1.0)
+        self.assertTrue(0.0 <= result[1]["data_quality"] <= 1.0)
         self.assertTrue(0.0 <= result[1]["blend_weight"] <= 1.0)
 
     def test_evaluation_is_finite(self):
@@ -37,6 +42,22 @@ class ForecasterTests(unittest.TestCase):
         metrics = model.evaluate(features.iloc[900:1100], {1: targets[1].iloc[900:1100]})
         self.assertTrue(np.isfinite(metrics[1].mae_nt))
         self.assertTrue(np.isfinite(metrics[1].rmse_nt))
+
+    def test_health_and_production_serialization(self):
+        features, targets, config = _dataset()
+        model = GeomagneticForecaster(config).fit(features.iloc[:900], {1: targets[1].iloc[:900]})
+        self.assertEqual(model.health_check()["schema_version"], 3)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "forecaster.pkl"
+            model.training_metadata["production_gate"] = "failed"
+            save_model(model, path)
+            with self.assertRaises(ValueError):
+                load_model(path)
+            model.training_metadata["production_gate"] = "passed"
+            save_model(model, path)
+            loaded = load_model(path)
+            self.assertTrue(loaded.fitted)
+            self.assertEqual(loaded.health_check()["production_gate"], "passed")
 
 
 if __name__ == "__main__":
