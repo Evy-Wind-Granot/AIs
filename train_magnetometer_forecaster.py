@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 import magnetometer_demo as md
 from magnetometer.acquisition import (
@@ -126,14 +127,33 @@ def main() -> int:
         train_features, train_targets
     )
     metrics = holdout_model.evaluate(test_features, test_targets)
+    current_amplitude = (
+        residual.rolling(180, min_periods=180).max()
+        - residual.rolling(180, min_periods=180).min()
+    )
+    baseline = current_amplitude.reindex(test_features.index).to_numpy()
+
     print("\nChronological holdout metrics:")
     for horizon, evaluation in metrics.items():
+        target = test_targets[horizon].to_numpy(dtype=float)
+        valid = np.isfinite(target) & np.isfinite(baseline)
+        baseline_mae = float(mean_absolute_error(target[valid], baseline[valid]))
+        baseline_rmse = float(
+            np.sqrt(mean_squared_error(target[valid], baseline[valid]))
+        )
+        improvement = (
+            100.0 * (baseline_mae - evaluation.mae_nt) / baseline_mae
+            if baseline_mae > 0
+            else 0.0
+        )
         print(
-            f"  +{horizon}h: MAE={evaluation.mae_nt:.2f} nT, "
-            f"RMSE={evaluation.rmse_nt:.2f} nT, "
+            f"  +{horizon}h: ML MAE={evaluation.mae_nt:.2f} nT, "
+            f"RMSE={evaluation.rmse_nt:.2f} nT; "
+            f"persistence MAE={baseline_mae:.2f} nT, "
+            f"RMSE={baseline_rmse:.2f} nT; "
+            f"MAE improvement={improvement:+.1f}%; "
             f"precision={evaluation.precision:.3f}, "
-            f"recall={evaluation.recall:.3f}, "
-            f"F1={evaluation.f1:.3f}, n={evaluation.n_samples}"
+            f"recall={evaluation.recall:.3f}, F1={evaluation.f1:.3f}"
         )
 
     output = Path(
