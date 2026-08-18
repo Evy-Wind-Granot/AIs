@@ -124,11 +124,15 @@ def load_case(observatory: str, case: Case) -> Dict[str, Any]:
         raise RuntimeError("No usable total-field data returned.")
 
     series = pd.to_numeric(df["f_nt"], errors="coerce")
-    if int(series.notna().sum()) < 24:
+    valid_count = int(series.notna().sum())
+    if valid_count < 24:
         raise RuntimeError("Too few valid samples.")
 
     index = series.index
-    cadence_s = float(index.to_series().diff().dropna().dt.total_seconds().median())
+    deltas = index.to_series().diff().dropna().dt.total_seconds()
+    if deltas.empty or not np.isfinite(deltas.median()) or deltas.median() <= 0:
+        raise RuntimeError("Could not determine a valid sample cadence.")
+    cadence_s = float(deltas.median())
     _, residual = pm.compute_qdc_baseline(series.to_numpy(dtype=float), cadence_s)
 
     kp = pd.Series(dtype=float)
@@ -141,7 +145,10 @@ def load_case(observatory: str, case: Case) -> Dict[str, Any]:
     periods = pd.period_range(index[0].strftime("%Y-%m"), index[-1].strftime("%Y-%m"), freq="M")
     dst_parts = []
     for p in periods:
-        part = fetch_dst_kyoto(int(p.year), int(p.month))
+        try:
+            part = fetch_dst_kyoto(int(p.year), int(p.month))
+        except Exception:
+            part = None
         if part is not None and not part.empty:
             dst_parts.append(part)
     if dst_parts:
@@ -155,6 +162,7 @@ def load_case(observatory: str, case: Case) -> Dict[str, Any]:
 
     return {
         "case": asdict(case),
+        "observatory": observatory,
         "index": index,
         "cadence_s": cadence_s,
         "series": series,
@@ -184,6 +192,8 @@ def choose_threshold(calibration: Sequence[Dict[str, Any]], candidates: Sequence
             other = pm.PROD_MINOR_STORM_NT if kind == "active" else pm.PROD_ACTIVE_NT
             scoreset = sample_score(data, threshold, other)
             metric_dicts.append(scoreset[kind]["sample_level"])
+        if not metric_dicts:
+            continue
         aggregate = pm.aggregate_binary_metrics(metric_dicts)
         if aggregate["f1"] is not None:
             scores.append((float(aggregate["f1"]), float(threshold)))
@@ -194,21 +204,26 @@ def choose_threshold(calibration: Sequence[Dict[str, Any]], candidates: Sequence
 
 
 def aggregate_cases(reports: Sequence[Dict[str, Any]], kind: str, threshold: float) -> Dict[str, Any]:
+    """Aggregate sample-level confusion counts across already-loaded case data."""
     metric_dicts = []
-    for report in reports:
-        data = report["_data"]
+    for data in reports:
         other = pm.PROD_MINOR_STORM_NT if kind == "active" else pm.PROD_ACTIVE_NT
         metric_dicts.append(sample_score(data, threshold, other)[kind]["sample_level"])
+    if not metric_dicts:
+        raise RuntimeError(f"No usable held-out cases available for {kind} scoring.")
     return pm.aggregate_binary_metrics(metric_dicts)
 
 
 def compact_report(data: Dict[str, Any], active_threshold: float, storm_threshold: float) -> Dict[str, Any]:
     finite = pm.finite_values(data["residual"])
+    if finite.size == 0:
+        raise RuntimeError("No finite residuals available for reporting.")
     abs_resid = np.abs(finite)
     valid = int(data["series"].notna().sum())
     expected = int(round(data["case"]["days"] * 86400 / data["cadence_s"]))
     score = sample_score(data, active_threshold, storm_threshold)
     return {
+        "observatory": data["observatory"],
         "case": data["case"],
         "samples": len(data["series"]),
         "valid_samples": valid,
@@ -237,14 +252,24 @@ def main() -> None:
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "magnetometer" / "data"))
     args = parser.parse_args()
 
+    if args.cases_per_class < 2:
+        raise ValueError("--cases-per-class must be at least 2 so calibration and held-out sets both exist.")
+    if args.window_days < 3:
+        raise ValueError("--window-days must be at least 3 for representative context around an event.")
+
     observatories = [x.strip().upper() for x in args.observatory.split(",") if x.strip()]
     years = [int(x.strip()) for x in args.years.split(",") if x.strip()]
+    if not observatories or not years:
+        raise ValueError("At least one observatory and one year are required.")
+
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     suite_started = time.perf_counter()
     cases = discover_cases(years, args.window_days, args.cases_per_class)
     calibration_cases, held_out_cases = split_cases(cases)
+    calibration_ids = {c.case_id for c in calibration_cases}
+    held_out_ids = {c.case_id for c in held_out_cases}
 
     all_reports: List[Dict[str, Any]] = []
     failures: List[Dict[str, Any]] = []
@@ -253,7 +278,6 @@ def main() -> None:
         for case in cases:
             try:
                 data = load_case(observatory, case)
-                data["observatory"] = observatory
                 all_reports.append(data)
                 case_json = compact_report(data, pm.PROD_ACTIVE_NT, pm.PROD_MINOR_STORM_NT)
                 (output_dir / f"validation_{observatory}_{case.case_id}.json").write_text(json.dumps(case_json, indent=2))
@@ -265,16 +289,10 @@ def main() -> None:
     if not all_reports:
         raise RuntimeError("No validation cases completed successfully.")
 
-    calibration_data = [
-        r for r in all_reports
-        if r["case"]["case_id"] in {c.case_id for c in calibration_cases}
-    ]
-    held_out_data = [
-        r for r in all_reports
-        if r["case"]["case_id"] in {c.case_id for c in held_out_cases}
-    ]
+    calibration_data = [r for r in all_reports if r["case"]["case_id"] in calibration_ids]
+    held_out_data = [r for r in all_reports if r["case"]["case_id"] in held_out_ids]
     if not calibration_data or not held_out_data:
-        raise RuntimeError("Need both calibration and held-out cases.")
+        raise RuntimeError("Need both calibration and held-out cases with at least one successful case in each split.")
 
     selected_active = choose_threshold(calibration_data, ACTIVE_CANDIDATES, "active", pm.PROD_ACTIVE_NT)
     selected_storm = choose_threshold(calibration_data, STORM_CANDIDATES, "storm", pm.PROD_MINOR_STORM_NT)
@@ -347,33 +365,23 @@ def main() -> None:
     print(f"  Active > {pm.PROD_ACTIVE_NT:.0f} nT")
     print(f"  Storm  > {pm.PROD_MINOR_STORM_NT:.0f} nT")
     print("-" * 88)
-    print("CALIBRATION-SELECTED CANDIDATES — NOT APPLIED")
-    print(f"  Active > {selected_active:.0f} nT")
-    print(f"  Storm  > {selected_storm:.0f} nT")
+    print("HELD-OUT SAMPLE-LEVEL RESULTS")
+    for name, metrics in (("Active", production_active), ("Storm", production_storm)):
+        print(f"{name} precision:         {metrics['precision']:.3f}" if metrics["precision"] is not None else f"{name} precision:         N/A")
+        print(f"{name} recall:            {metrics['recall']:.3f}" if metrics["recall"] is not None else f"{name} recall:            N/A")
+        print(f"{name} F1:                {metrics['f1']:.3f}" if metrics["f1"] is not None else f"{name} F1:                N/A")
+        print(f"{name} false alarm rate:  {metrics['false_alarm_rate']:.3f}" if metrics["false_alarm_rate"] is not None else f"{name} false alarm rate:  N/A")
     print("-" * 88)
-    print("HELD-OUT TEST — PRODUCTION THRESHOLDS")
-    print(f"  Active precision:         {production_active['precision']}")
-    print(f"  Active recall:            {production_active['recall']}")
-    print(f"  Active F1:                {production_active['f1']}")
-    print(f"  Active false alarm:       {production_active['false_alarm_rate']}")
-    print(f"  Storm precision:          {production_storm['precision']}")
-    print(f"  Storm recall:             {production_storm['recall']}")
-    print(f"  Storm F1:                 {production_storm['f1']}")
-    print(f"  Storm false alarm:        {production_storm['false_alarm_rate']}")
+    print("CALIBRATION-SELECTED CANDIDATES — evaluated on held-out data")
+    print(f"  Active candidate: {selected_active:.0f} nT")
+    print(f"  Storm candidate:  {selected_storm:.0f} nT")
     print("-" * 88)
-    print("HELD-OUT TEST — CALIBRATION-SELECTED CANDIDATES")
-    print(f"  Active precision:         {candidate_active['precision']}")
-    print(f"  Active recall:            {candidate_active['recall']}")
-    print(f"  Active F1:                {candidate_active['f1']}")
-    print(f"  Storm precision:          {candidate_storm['precision']}")
-    print(f"  Storm recall:             {candidate_storm['recall']}")
-    print(f"  Storm F1:                 {candidate_storm['f1']}")
+    print("REFERENCE COVERAGE")
+    print(f"  Kp mean coverage:   {result['held_out_test']['coverage']['kp_mean'] * 100:.2f}%")
+    print(f"  Dst mean coverage:  {result['held_out_test']['coverage']['dst_mean'] * 100:.2f}%")
+    print(f"  Overall mean:       {result['held_out_test']['coverage']['reference_mean'] * 100:.2f}%")
     print("-" * 88)
-    print(f"Mean reference coverage:    {result['held_out_test']['coverage']['reference_mean'] * 100:.2f}%")
-    print(f"Mean Kp coverage:           {result['held_out_test']['coverage']['kp_mean'] * 100:.2f}%")
-    print(f"Mean Dst coverage:          {result['held_out_test']['coverage']['dst_mean'] * 100:.2f}%")
-    print("-" * 88)
-    print(f"JSON report:                {path}")
+    print(f"Report: {path}")
     print("=" * 88)
 
 
