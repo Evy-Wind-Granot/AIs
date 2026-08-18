@@ -56,8 +56,10 @@ def build_features(
         values = np.asarray(residual, dtype=float)
         if index is None:
             index = pd.date_range(
-                "1970-01-01", periods=len(values),
-                freq=pd.Timedelta(seconds=config.cadence_s), tz="UTC"
+                "1970-01-01",
+                periods=len(values),
+                freq=pd.Timedelta(seconds=config.cadence_s),
+                tz="UTC",
             )
         if len(index) != len(values):
             raise ValueError("index length must match residual length")
@@ -82,7 +84,9 @@ def build_features(
         frame[f"residual_ptp_{prefix}"] = roll.max() - roll.min()
         frame[f"residual_energy_{prefix}"] = _rolling_energy(series, samples)
         frame[f"residual_mean_{prefix}"] = roll.mean()
-        frame[f"residual_abs_mean_{prefix}"] = series.abs().rolling(samples, min_periods=samples).mean()
+        frame[f"residual_abs_mean_{prefix}"] = series.abs().rolling(
+            samples, min_periods=samples
+        ).mean()
         frame[f"dbdt_abs_mean_{prefix}"] = frame["residual_dbdt_abs"].rolling(
             samples, min_periods=samples
         ).mean()
@@ -110,10 +114,18 @@ def build_features(
     _add_index("dst", dst)
     for minutes in (180, 360, 720):
         samples = max(1, int(round(minutes * 60.0 / config.cadence_s)))
-        frame[f"kp_mean_{minutes}m"] = frame["kp"].rolling(samples, min_periods=1).mean()
-        frame[f"kp_max_{minutes}m"] = frame["kp"].rolling(samples, min_periods=1).max()
-        frame[f"dst_mean_{minutes}m"] = frame["dst"].rolling(samples, min_periods=1).mean()
-        frame[f"dst_min_{minutes}m"] = frame["dst"].rolling(samples, min_periods=1).min()
+        frame[f"kp_mean_{minutes}m"] = frame["kp"].rolling(
+            samples, min_periods=1
+        ).mean()
+        frame[f"kp_max_{minutes}m"] = frame["kp"].rolling(
+            samples, min_periods=1
+        ).max()
+        frame[f"dst_mean_{minutes}m"] = frame["dst"].rolling(
+            samples, min_periods=1
+        ).mean()
+        frame[f"dst_min_{minutes}m"] = frame["dst"].rolling(
+            samples, min_periods=1
+        ).min()
 
     frame.replace([np.inf, -np.inf], np.nan, inplace=True)
     return frame
@@ -126,31 +138,29 @@ def build_targets(
     horizons_hours: Sequence[int] = (1, 3, 6),
     amplitude_window_min: int = 180,
 ) -> dict[int, pd.Series]:
-    """Create leakage-safe future amplitudes strictly after each forecast time.
-
-    For horizon ``h`` the label is the peak-to-peak residual amplitude over the
-    *future* interval ``[t+h, t+h+amplitude_window]``.  No sample at or before
-    ``t`` can contribute to the label, which prevents temporal leakage.
-    """
+    """Create leakage-safe future amplitudes strictly after each forecast time."""
     if isinstance(residual, pd.Series):
         series = residual.astype(float).copy()
         series.index = pd.DatetimeIndex(pd.to_datetime(series.index, utc=True))
     else:
         values = np.asarray(residual, dtype=float)
         index = pd.date_range(
-            "1970-01-01", periods=len(values),
-            freq=pd.Timedelta(seconds=cadence_s), tz="UTC"
+            "1970-01-01",
+            periods=len(values),
+            freq=pd.Timedelta(seconds=cadence_s),
+            tz="UTC",
         )
         series = pd.Series(values, index=index)
 
     window = max(1, int(round(amplitude_window_min * 60.0 / cadence_s)))
-    # Reverse rolling computes a causal-looking statistic over [t, t+window).
-    # Shifting that statistic backwards by h places the complete target window
-    # strictly in the future relative to the feature timestamp.
+    # Reverse rolling computes [t, t+window); shifting places the target window
+    # strictly after the forecast timestamp.
     future_roll = series.iloc[::-1].rolling(window, min_periods=window)
     future_amplitude = (future_roll.max() - future_roll.min()).iloc[::-1]
     return {
-        int(h): future_amplitude.shift(-max(1, int(round(h * 3600.0 / cadence_s))))
+        int(h): future_amplitude.shift(
+            -max(1, int(round(h * 3600.0 / cadence_s)))
+        )
         for h in horizons_hours
     }
 
