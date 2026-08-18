@@ -30,12 +30,15 @@ class ForecastFeatureTests(unittest.TestCase):
         self.assertTrue(features["dst_available"].eq(0).all())
         self.assertGreaterEqual(float(features["kp_age_min"].iloc[-1]), 1e6)
 
-    def test_targets_start_strictly_after_forecast_time(self):
+    def test_targets_are_strictly_future(self):
         residual = _series(1000)
         targets = build_targets(residual, horizons_hours=(1,), amplitude_window_min=15)
-        first = targets[1].first_valid_index()
-        self.assertIsNotNone(first)
-        self.assertGreater(first, residual.index[0])
+        changed = residual.copy()
+        changed.iloc[0] += 10000.0
+        changed_targets = build_targets(changed, horizons_hours=(1,), amplitude_window_min=15)
+        # Target at t is [t+1h, t+1h+15m), so changing t cannot alter it.
+        self.assertAlmostEqual(float(targets[1].iloc[0]), float(changed_targets[1].iloc[0]))
+        self.assertEqual(targets[1].first_valid_index(), residual.index[0])
 
 
 if __name__ == "__main__":
