@@ -1,6 +1,6 @@
 """Production short-horizon hybrid geomagnetic forecaster.
 
-The forecaster deliberately remains a fast tabular time-series model.  The
+The forecaster deliberately remains a fast tabular time-series model. The
 harmonic/QDC residual and causal rolling statistics are the feature layer;
 this module is responsible only for supervised future-amplitude prediction,
 storm-threshold probability, evaluation, and production-safe serialization.
@@ -16,7 +16,13 @@ import numpy as np
 import pandas as pd
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
-from sklearn.metrics import f1_score, mean_absolute_error, mean_squared_error, precision_score, recall_score
+from sklearn.metrics import (
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    precision_score,
+    recall_score,
+)
 
 from magnetometer.features import FeatureConfig, build_features, build_targets
 
