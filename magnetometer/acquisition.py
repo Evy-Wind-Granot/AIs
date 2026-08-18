@@ -30,6 +30,7 @@ USER_AGENT = "MagnetometerProductionPipeline/2.1.0"
 HTTP_CACHE_ENABLED = True
 HTTP_CACHE_DIR = ".magnetometer_cache"
 HTTP_CACHE_TTL_HOURS = 24.0
+INTERMAGNET_MAX_FETCH_DAYS = 7
 
 
 class AcquisitionError(RuntimeError):
@@ -39,9 +40,11 @@ class AcquisitionError(RuntimeError):
 class AcquisitionClient:
     """Reusable, thread-safe acquisition client.
 
-    The HTTP layer retries both ordinary transient HTTP failures and transport
-    failures such as truncated chunked responses. Historical responses are
-    cached only after a complete successful response has been received.
+    Historical magnetometer requests longer than a week are automatically
+    split into seven-day chunks. This avoids large-response truncation from
+    public upstream servers while preserving one compatible text payload for
+    the existing IAGA-2002 parser. Every chunk is independently cached only
+    after its complete body has been received.
     """
 
     __slots__ = ("session", "cache", "_dst_unavailable", "_dst_lock")
@@ -68,14 +71,7 @@ class AcquisitionClient:
         cacheable: bool = True,
         transport_retries: int = 4,
     ) -> Tuple[int, str]:
-        """GET text with explicit retries for incomplete HTTP bodies.
-
-        ``urllib3.Retry`` handles HTTP status retries, but a server/proxy can
-        also terminate a chunked response after only part of the body has been
-        delivered. ``requests`` surfaces that as ``ChunkedEncodingError`` or
-        ``ConnectionError`` while reading ``response.text``; those failures
-        are safe to retry for idempotent GET requests.
-        """
+        """GET text with retries for incomplete HTTP bodies and transient errors."""
         key = ResponseCache.key(url, params)
         if cacheable and self.cache is not None:
             hit = self.cache.get(key)
@@ -87,8 +83,8 @@ class AcquisitionClient:
         for attempt in range(transport_retries + 1):
             try:
                 response = self.session.get(url, params=params, timeout=timeout)
-                # Force complete body consumption here so a truncated chunked
-                # transfer is detected before anything is cached or returned.
+                # Force complete body consumption so a truncated chunked
+                # response is detected before anything is cached or returned.
                 text = response.text
                 result = (response.status_code, text)
                 if cacheable and response.status_code == 200 and self.cache is not None:
@@ -125,35 +121,57 @@ class AcquisitionClient:
         duration_days: int = 7,
         samples_per_day: str = "Minute",
     ) -> str:
+        """Fetch station data, chunking long historical requests safely."""
         if start_date is None:
             start_date = "2024-01-01"
-        params = {
-            "Request": "GetData",
-            "observatoryIagaCode": observatory,
-            "samplesPerDay": samples_per_day,
-            "dataStartDate": start_date,
-            "dataDuration": duration_days,
-            "format": "iaga2002",
-            "orientation": "XYZF",
-        }
-        logger.info(
-            "Fetching INTERMAGNET data for %s from %s (%s days)...",
-            observatory,
-            start_date,
-            duration_days,
-        )
-        end_date = pd.to_datetime(start_date, utc=True) + pd.Timedelta(days=duration_days)
-        status, text = self.get_text(
-            INTERMAGNET_BASE,
-            params=params,
-            timeout=60,
-            cacheable=_window_is_historical(end_date),
-        )
-        if status >= 400:
-            raise requests.HTTPError(
-                f"INTERMAGNET returned HTTP {status} for {observatory}"
+        if duration_days <= 0:
+            raise ValueError("duration_days must be positive")
+
+        start = pd.to_datetime(start_date, utc=True).normalize()
+        chunks: list[str] = []
+        remaining = int(duration_days)
+        cursor = start
+
+        while remaining > 0:
+            chunk_days = min(remaining, INTERMAGNET_MAX_FETCH_DAYS)
+            chunk_date = cursor.strftime("%Y-%m-%d")
+            params = {
+                "Request": "GetData",
+                "observatoryIagaCode": observatory,
+                "samplesPerDay": samples_per_day,
+                "dataStartDate": chunk_date,
+                "dataDuration": chunk_days,
+                "format": "iaga2002",
+                "orientation": "XYZF",
+            }
+            logger.info(
+                "Fetching INTERMAGNET data for %s from %s (%s days)...",
+                observatory,
+                chunk_date,
+                chunk_days,
             )
-        return text
+            end_date = cursor + pd.Timedelta(days=chunk_days)
+            status, text = self.get_text(
+                INTERMAGNET_BASE,
+                params=params,
+                timeout=60,
+                cacheable=_window_is_historical(end_date),
+            )
+            if status >= 400:
+                raise requests.HTTPError(
+                    f"INTERMAGNET returned HTTP {status} for {observatory} "
+                    f"starting {chunk_date}"
+                )
+            if not text.strip():
+                raise AcquisitionError(
+                    f"INTERMAGNET returned an empty response for {observatory} "
+                    f"starting {chunk_date}"
+                )
+            chunks.append(text)
+            cursor += pd.Timedelta(days=chunk_days)
+            remaining -= chunk_days
+
+        return "\n".join(chunks)
 
     def fetch_kp(self, start_date: str, end_date: str) -> pd.Series:
         url = f"{KP_GFZ_URL}?start={start_date}T00:00:00Z&end={end_date}T23:59:59Z&index=Kp"
