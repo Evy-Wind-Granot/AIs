@@ -14,9 +14,19 @@
 
 set -euo pipefail
 
+# Always run relative to the repository root, regardless of the caller's cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 VENV_DIR="${VENV_DIR:-./venv}"
 MOIRAI_VENV="${MOIRAI_VENV:-./venv_moirai}"
 PYTHON_CMD="${PYTHON_CMD:-python3}"
+WEATHER_SCRIPT="weather/weather_tsfm_engine_v2_production_hybrid_fixed.py"
+MAGNETOMETER_SCRIPT="magnetometer/magnetometer_demo.py"
+SEISMIC_SCRIPT="seisometer/seismic_demo.py"
+WEATHER_DATA_DIR="weather/data"
+
+mkdir -p "$WEATHER_DATA_DIR"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -133,9 +143,9 @@ install_moirai_deps() {
 run_magnetometer() {
     banner "MAGNETOMETER DEMO"
     if [[ "$MODE" == "self-test" ]]; then
-        python magnetometer_demo.py --self-test
+        python "$MAGNETOMETER_SCRIPT" --self-test
     else
-        python magnetometer_demo.py --fetch-real-data --days 7 --start-date 2024-01-01
+        python "$MAGNETOMETER_SCRIPT" --fetch-real-data --days 7 --start-date 2024-01-01
     fi
 }
 
@@ -165,7 +175,7 @@ run_weather() {
     if [[ -n "$main_models" ]]; then
         info "Main env models: $main_models"
         activate_venv "$VENV_DIR"
-        python weather_tsfm_engine_v2_production_hybrid_fixed.py \
+        python "$WEATHER_SCRIPT" \
             --mode benchmark --model "$main_models" \
             --station-id 51337 --year 2024 --months 1 \
             --horizon 24 --n-splits 5 --output "$main_json"
@@ -180,7 +190,7 @@ run_weather() {
             echo '{"benchmark_metrics":{}}' > "$moirai_json"
         else
             info "Moirai venv models: $moirai_models"
-            "$MOIRAI_VENV/bin/python" weather_tsfm_engine_v2_production_hybrid_fixed.py \
+            "$MOIRAI_VENV/bin/python" "$WEATHER_SCRIPT" \
                 --mode benchmark --model "$moirai_models" \
                 --station-id 51337 --year 2024 --months 1 \
                 --horizon 24 --n-splits 5 --output "$moirai_json"
@@ -199,7 +209,7 @@ for field, backends in moirai.get('benchmark_metrics', {}).items():
     if field not in main.get('benchmark_metrics', {}):
         main['benchmark_metrics'][field] = {}
     main['benchmark_metrics'][field].update(backends)
-with open('weather_merged_results.json', 'w') as f:
+with open('$WEATHER_DATA_DIR/weather_merged_results.json', 'w') as f:
     json.dump(main, f, indent=2)
 
 print('\n' + '='*120)
@@ -224,12 +234,12 @@ run_seismic() {
     banner "SEISMIC DEMO"
     export CUDA_VISIBLE_DEVICES=""
     if [[ "$MODE" == "self-test" ]]; then
-        python seismic_demo.py --self-test
+        python "$SEISMIC_SCRIPT" --self-test
     else
-        python seismic_demo.py --fetch-real-data \
+        python "$SEISMIC_SCRIPT" --fetch-real-data \
             --network IU --station MAJO --channel BH? \
             --start 2024-01-01T07:00:00 --end 2024-01-01T11:00:00 \
-            --window-s 60 --step-s 30 --prob-threshold 0.4 #this threshold is for demo purposes only; adjust as needed
+            --window-s 60 --step-s 30 --prob-threshold 0.4
     fi
 }
 
@@ -290,6 +300,7 @@ EOF
     printf "Mode:        %s\n" "$MODE"
     printf "Main venv:   %s\n" "$VENV_DIR"
     printf "Moirai venv: %s\n" "$MOIRAI_VENV"
+    printf "Weather data: %s\n" "$WEATHER_DATA_DIR"
 
     if [[ $e1 -ne 0 || $e2 -ne 0 || $e3 -ne 0 ]]; then
         warn "One or more demos exited with an error."
