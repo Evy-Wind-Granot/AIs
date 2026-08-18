@@ -7,15 +7,10 @@ cross-checking), run the classifier, print the numbers.
 
     python3 run_magnetometer.py --observatory VIC --start-date 2024-05-08 --days 5
 
-Performance notes vs the old CLI invocations:
-  - Kp and Dst are fetched concurrently with each other (ThreadPoolExecutor)
-    instead of sequentially, cutting index-fetch wall time roughly in half.
-  - The magnetometer series and the indices are fetched concurrently too.
-  - HTTP_CACHE_ENABLED stays on (magnetometer_demo's default), so re-running
-    the same window is instant instead of re-hitting INTERMAGNET/GFZ/Kyoto.
-  - This never touches --live, so it never trips over clock skew between
-    the local machine and the station feed, or the "freshness" checks that
-    only make sense for a live monitor.
+The runner deliberately keeps acquisition separate from scientific analysis:
+transport, retries, and historical caching live in ``magnetometer.acquisition``;
+IAGA-2002 parsing lives in ``magnetometer.parsing``; and ``magnetometer_demo``
+remains the backwards-compatible analysis API.
 """
 
 import argparse
@@ -26,6 +21,12 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 
 import magnetometer_demo as md
+from magnetometer.acquisition import (
+    fetch_dst_kyoto,
+    fetch_intermagnet_iaga2002,
+    fetch_kp_gfz,
+)
+from magnetometer.parsing import parse_iaga2002_to_dataframe
 
 
 def fetch_window(observatory: str, start_date: str, days: int, warmup_days: float):
@@ -36,7 +37,7 @@ def fetch_window(observatory: str, start_date: str, days: int, warmup_days: floa
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         mag_future = pool.submit(
-            md.fetch_intermagnet_iaga2002,
+            fetch_intermagnet_iaga2002,
             observatory=observatory,
             start_date=fetch_start,
             duration_days=total_days,
@@ -44,15 +45,15 @@ def fetch_window(observatory: str, start_date: str, days: int, warmup_days: floa
         # Kp needs the fetch window, which we already know without waiting on
         # the magnetometer download, so kick it off in parallel.
         end_guess = (start_dt + pd.Timedelta(days=days)).strftime("%Y-%m-%d")
-        kp_future = pool.submit(md.fetch_kp_gfz, fetch_start, end_guess)
+        kp_future = pool.submit(fetch_kp_gfz, fetch_start, end_guess)
 
         mag_text = mag_future.result()
-        df = md.parse_iaga2002_to_dataframe(mag_text)
+        df = parse_iaga2002_to_dataframe(mag_text)
         if df is None or df.empty:
             raise RuntimeError(f"No magnetometer data returned for {observatory}")
 
         months = sorted({(t.year, t.month) for t in df.index})
-        dst_parts = list(pool.map(lambda ym: md.fetch_dst_kyoto(*ym), months))
+        dst_parts = list(pool.map(fetch_dst_kyoto, months))
 
     kp = None
     try:

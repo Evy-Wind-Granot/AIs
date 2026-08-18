@@ -2,3 +2,7 @@ venv/
 venv_moirai/
 *.jsonl
 weather_merged_results.json
+
+# Generated geomagnetic ML artifacts and temporary model files.
+models/artifacts/
+*.pkl.tmp

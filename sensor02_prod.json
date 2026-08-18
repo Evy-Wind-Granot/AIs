@@ -1,0 +1,24 @@
+{
+  "station_id": "SENSOR_02",
+  "sample_rate_hz": 1.0,
+  "components": {
+    "x": {
+      "baseline_mean_nT": 17999.997020520128,
+      "noise_floor_std_nT": 0.4931524376637046,
+      "threshold_3sigma_nT": 18001.47647783312
+    },
+    "y": {
+      "baseline_mean_nT": -1499.993350573248,
+      "noise_floor_std_nT": 0.493153788734221,
+      "threshold_3sigma_nT": -1498.5138892070454
+    },
+    "z": {
+      "baseline_mean_nT": 51999.98883653884,
+      "noise_floor_std_nT": 0.4998159578396889,
+      "threshold_3sigma_nT": 52001.48828441236
+    }
+  },
+  "qdc_window_hours": 24,
+  "anomaly_threshold_multiplier": 3.0,
+  "derived_alert_threshold_nT": 14.07998203431889
+}

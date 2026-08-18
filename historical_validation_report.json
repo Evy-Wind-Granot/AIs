@@ -1,0 +1,381 @@
+{
+  "benchmark": {
+    "observatories": [
+      "VIC"
+    ],
+    "start_date": "2025-01-01",
+    "end_date_exclusive": "2026-01-01",
+    "chunk_days": 30,
+    "warmup_days": 3.0,
+    "column": "x_nt",
+    "config": "calibrated_vic.json",
+    "validation_mode": "local_only_no_global_indices",
+    "definition": "sample-level binary storm validation; global storm = severity >= 3; local storm = minor/major/severe; event = contiguous global storm samples at one-minute cadence"
+  },
+  "results": {
+    "coverage": {
+      "requested_samples": 525600,
+      "evaluated_samples": 525600,
+      "excluded_samples": 0,
+      "evaluation_coverage": 1.0,
+      "global_truth_coverage_of_evaluated": 1.0,
+      "chunks_ok": 13,
+      "chunks_failed": 0
+    },
+    "overall": {
+      "tp": 4440,
+      "fp": 4357,
+      "fn": 3300,
+      "tn": 513503,
+      "detection_rate": 0.5736434108527132,
+      "precision": 0.5047175173354552,
+      "recall": 0.5736434108527132,
+      "f1": 0.5369776864001935,
+      "false_alarm_rate": 0.008413470822229947,
+      "missed_event_rate": 0.4263565891472868,
+      "total_evaluated_samples": 525600,
+      "samples_with_global_data": 525600,
+      "kp_samples": 525600,
+      "dst_samples": 0
+    },
+    "performance_by_storm_severity": {
+      "storm": {
+        "samples": 7740,
+        "detected": 4440,
+        "missed": 3300,
+        "detection_rate": 0.5736434108527132,
+        "missed_event_rate": 0.4263565891472868
+      },
+      "severe_storm": {
+        "samples": 540,
+        "detected": 512,
+        "missed": 28,
+        "detection_rate": 0.9481481481481482,
+        "missed_event_rate": 0.05185185185185185
+      }
+    },
+    "performance_by_season": {
+      "autumn": {
+        "tp": 1630,
+        "fp": 1742,
+        "fn": 1430,
+        "tn": 126238,
+        "detection_rate": 0.5326797385620915,
+        "precision": 0.4833926453143535,
+        "recall": 0.5326797385620915,
+        "f1": 0.5068407960199005,
+        "false_alarm_rate": 0.013611501797155806,
+        "missed_event_rate": 0.4673202614379085
+      },
+      "spring": {
+        "tp": 562,
+        "fp": 1074,
+        "fn": 518,
+        "tn": 130326,
+        "detection_rate": 0.5203703703703704,
+        "precision": 0.343520782396088,
+        "recall": 0.5203703703703704,
+        "f1": 0.4138438880706922,
+        "false_alarm_rate": 0.00817351598173516,
+        "missed_event_rate": 0.47962962962962963
+      },
+      "summer": {
+        "tp": 1666,
+        "fp": 1473,
+        "fn": 674,
+        "tn": 128667,
+        "detection_rate": 0.711965811965812,
+        "precision": 0.5307422746097483,
+        "recall": 0.711965811965812,
+        "f1": 0.608140171564154,
+        "false_alarm_rate": 0.01131857999077916,
+        "missed_event_rate": 0.288034188034188
+      },
+      "winter": {
+        "tp": 582,
+        "fp": 68,
+        "fn": 678,
+        "tn": 128272,
+        "detection_rate": 0.46190476190476193,
+        "precision": 0.8953846153846153,
+        "recall": 0.46190476190476193,
+        "f1": 0.6094240837696335,
+        "false_alarm_rate": 0.000529842605578931,
+        "missed_event_rate": 0.5380952380952381
+      }
+    },
+    "performance_by_month": {
+      "01": {
+        "tp": 581,
+        "fp": 10,
+        "fn": 139,
+        "tn": 43910,
+        "detection_rate": 0.8069444444444445,
+        "precision": 0.9830795262267343,
+        "recall": 0.8069444444444445,
+        "f1": 0.8863463005339436,
+        "false_alarm_rate": 0.00022768670309653916,
+        "missed_event_rate": 0.19305555555555556
+      },
+      "02": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "tn": 40320,
+        "detection_rate": null,
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "false_alarm_rate": 0.0,
+        "missed_event_rate": null
+      },
+      "03": {
+        "tp": 0,
+        "fp": 202,
+        "fn": 0,
+        "tn": 44438,
+        "detection_rate": null,
+        "precision": 0.0,
+        "recall": null,
+        "f1": null,
+        "false_alarm_rate": 0.004525089605734767,
+        "missed_event_rate": null
+      },
+      "04": {
+        "tp": 355,
+        "fp": 186,
+        "fn": 365,
+        "tn": 42294,
+        "detection_rate": 0.4930555555555556,
+        "precision": 0.6561922365988909,
+        "recall": 0.4930555555555556,
+        "f1": 0.56304520222046,
+        "false_alarm_rate": 0.004378531073446328,
+        "missed_event_rate": 0.5069444444444444
+      },
+      "05": {
+        "tp": 207,
+        "fp": 686,
+        "fn": 153,
+        "tn": 43594,
+        "detection_rate": 0.575,
+        "precision": 0.23180291153415453,
+        "recall": 0.575,
+        "f1": 0.3304070231444533,
+        "false_alarm_rate": 0.015492321589882566,
+        "missed_event_rate": 0.425
+      },
+      "06": {
+        "tp": 1666,
+        "fp": 1101,
+        "fn": 674,
+        "tn": 39759,
+        "detection_rate": 0.711965811965812,
+        "precision": 0.6020961329960246,
+        "recall": 0.711965811965812,
+        "f1": 0.6524378304288233,
+        "false_alarm_rate": 0.026945668135095448,
+        "missed_event_rate": 0.288034188034188
+      },
+      "07": {
+        "tp": 0,
+        "fp": 191,
+        "fn": 0,
+        "tn": 44449,
+        "detection_rate": null,
+        "precision": 0.0,
+        "recall": null,
+        "f1": null,
+        "false_alarm_rate": 0.004278673835125448,
+        "missed_event_rate": null
+      },
+      "08": {
+        "tp": 0,
+        "fp": 181,
+        "fn": 0,
+        "tn": 44459,
+        "detection_rate": null,
+        "precision": 0.0,
+        "recall": null,
+        "f1": null,
+        "false_alarm_rate": 0.004054659498207885,
+        "missed_event_rate": null
+      },
+      "09": {
+        "tp": 239,
+        "fp": 521,
+        "fn": 481,
+        "tn": 41959,
+        "detection_rate": 0.33194444444444443,
+        "precision": 0.3144736842105263,
+        "recall": 0.33194444444444443,
+        "f1": 0.32297297297297295,
+        "false_alarm_rate": 0.012264595103578154,
+        "missed_event_rate": 0.6680555555555555
+      },
+      "10": {
+        "tp": 180,
+        "fp": 320,
+        "fn": 360,
+        "tn": 43780,
+        "detection_rate": 0.3333333333333333,
+        "precision": 0.36,
+        "recall": 0.3333333333333333,
+        "f1": 0.34615384615384615,
+        "false_alarm_rate": 0.0072562358276643995,
+        "missed_event_rate": 0.6666666666666666
+      },
+      "11": {
+        "tp": 1211,
+        "fp": 901,
+        "fn": 589,
+        "tn": 40499,
+        "detection_rate": 0.6727777777777778,
+        "precision": 0.5733901515151515,
+        "recall": 0.6727777777777778,
+        "f1": 0.619120654396728,
+        "false_alarm_rate": 0.02176328502415459,
+        "missed_event_rate": 0.32722222222222225
+      },
+      "12": {
+        "tp": 1,
+        "fp": 58,
+        "fn": 539,
+        "tn": 44042,
+        "detection_rate": 0.001851851851851852,
+        "precision": 0.01694915254237288,
+        "recall": 0.001851851851851852,
+        "f1": 0.00333889816360601,
+        "false_alarm_rate": 0.0013151927437641724,
+        "missed_event_rate": 0.9981481481481481
+      }
+    },
+    "performance_by_observatory": {
+      "VIC": {
+        "total_samples": 525600,
+        "global_samples": 525600,
+        "tp": 4440,
+        "fp": 4357,
+        "fn": 3300,
+        "tn": 513503,
+        "detection_rate": 0.5736434108527132,
+        "precision": 0.5047175173354552,
+        "recall": 0.5736434108527132,
+        "f1": 0.5369776864001935,
+        "false_alarm_rate": 0.008413470822229947,
+        "missed_event_rate": 0.4263565891472868
+      }
+    },
+    "performance_by_global_source": {
+      "Kp-only": {
+        "tp": 4440,
+        "fp": 4357,
+        "fn": 3300,
+        "tn": 513503,
+        "detection_rate": 0.5736434108527132,
+        "precision": 0.5047175173354552,
+        "recall": 0.5736434108527132,
+        "f1": 0.5369776864001935,
+        "false_alarm_rate": 0.008413470822229947,
+        "missed_event_rate": 0.4263565891472868
+      }
+    },
+    "event_level_performance": {
+      "global_events": 24,
+      "events_detected": 18,
+      "events_missed": 6,
+      "event_detection_rate": 0.75,
+      "severe_global_events": 2,
+      "severe_events_detected": 2,
+      "severe_events_missed": 0,
+      "severe_event_detection_rate": 1.0,
+      "by_observatory": {
+        "VIC": {
+          "total": 24,
+          "detected": 18,
+          "missed": 6,
+          "severe_total": 2,
+          "severe_detected": 2,
+          "severe_missed": 0
+        }
+      }
+    },
+    "binary_confusion_matrix": {
+      "rows_truth": [
+        "quiet_or_nonstorm",
+        "storm"
+      ],
+      "columns_prediction": [
+        "quiet_or_nonstorm",
+        "storm"
+      ],
+      "matrix": [
+        [
+          513503,
+          4357
+        ],
+        [
+          3300,
+          4440
+        ]
+      ]
+    },
+    "five_level_confusion_matrix": {
+      "rows_truth": [
+        "quiet",
+        "unsettled",
+        "active",
+        "storm",
+        "severe_storm"
+      ],
+      "columns_prediction": [
+        "quiet",
+        "unsettled",
+        "active",
+        "storm",
+        "severe_storm"
+      ],
+      "matrix": [
+        [
+          194522,
+          24623,
+          7069,
+          0,
+          0
+        ],
+        [
+          82024,
+          72955,
+          81586,
+          811,
+          181
+        ],
+        [
+          1877,
+          6514,
+          42059,
+          3221,
+          144
+        ],
+        [
+          0,
+          0,
+          3272,
+          3531,
+          397
+        ],
+        [
+          0,
+          10,
+          18,
+          345,
+          167
+        ]
+      ]
+    },
+    "global_source_samples": {
+      "Kp-only": 525600,
+      "no-global": 0
+    }
+  }
+}
