@@ -22,6 +22,9 @@ from sklearn.isotonic import IsotonicRegression
 
 from . import production_forecaster as _production
 
+CERTIFIED_MODEL_VERSION = "2.1.0"
+_production.MODEL_VERSION = CERTIFIED_MODEL_VERSION
+
 
 class _IsotonicCalibratedClassifier:
     """Pickle-safe causal isotonic calibration around a fitted classifier."""
@@ -126,9 +129,6 @@ def _choose_robust_threshold(
 
 class GeomagneticForecaster(_production.GeomagneticForecaster):
     """Production forecaster with stricter temporal certification behavior."""
-
-    def __post_init__(self) -> None:
-        self._calibration_horizon_index = 0
 
     def _calibrated_classifier(
         self,
