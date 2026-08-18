@@ -1,0 +1,418 @@
+{
+  "calibration": {
+    "observatory": "VIC",
+    "start_date": "2023-01-01",
+    "end_date_exclusive": "2024-01-01",
+    "objective": "maximize sample-level storm F1 subject to false_alarm_rate <= max_false_alarm_rate",
+    "max_false_alarm_rate": 0.01,
+    "windows_tested_min": [
+      60.0,
+      120.0,
+      180.0,
+      240.0,
+      360.0
+    ],
+    "modes_tested": [
+      "range",
+      "hybrid",
+      "max"
+    ],
+    "chunks_ok": 11,
+    "chunks_failed": 2,
+    "requested_samples": 525600,
+    "evaluated_samples": 436455,
+    "global_storm_samples": 3600,
+    "global_source": "Kp+Dst when available; Kp-only when Dst is unavailable",
+    "pipeline_validation_mode": "local_only_no_global_indices"
+  },
+  "selected": {
+    "window_min": 120.0,
+    "mode": "range",
+    "threshold_nt": 83.50647974743697,
+    "eligible": true,
+    "tp": 2590,
+    "fp": 2219,
+    "fn": 1010,
+    "tn": 430636,
+    "precision": 0.5385735080058224,
+    "recall": 0.7194444444444444,
+    "f1": 0.6160066595314544,
+    "false_alarm_rate": 0.0051264280186205545,
+    "missed_event_rate": 0.28055555555555556,
+    "evaluated_samples": 436455,
+    "selection_note": "Selected highest-F1 candidate within false-alarm budget."
+  },
+  "config": {
+    "FLAG_AMPLITUDE_WINDOW_MIN": 120.0,
+    "FLAG_AMPLITUDE_MODE": "range",
+    "FLAG_AMPLITUDE_CENTERED": false,
+    "FLAG_THRESHOLD_MINOR_STORM_NT": 83.50647974743697
+  },
+  "holdout_required": true,
+  "holdout": {
+    "coverage": {
+      "requested_samples": 527040,
+      "evaluated_samples": 483840,
+      "excluded_samples": 43200,
+      "evaluation_coverage": 0.9180327868852459,
+      "global_truth_coverage_of_evaluated": 1.0,
+      "chunks_ok": 12,
+      "chunks_failed": 1
+    },
+    "overall": {
+      "tp": 7459,
+      "fp": 2356,
+      "fn": 2621,
+      "tn": 471404,
+      "detection_rate": 0.7399801587301588,
+      "precision": 0.7599592460519613,
+      "recall": 0.7399801587301588,
+      "f1": 0.7498366423724554,
+      "false_alarm_rate": 0.0049729821006416755,
+      "missed_event_rate": 0.2600198412698413,
+      "total_evaluated_samples": 483840,
+      "samples_with_global_data": 483840,
+      "kp_samples": 483840,
+      "dst_samples": 0
+    },
+    "performance_by_storm_severity": {
+      "storm": {
+        "samples": 10080,
+        "detected": 7459,
+        "missed": 2621,
+        "detection_rate": 0.7399801587301588,
+        "missed_event_rate": 0.2600198412698413
+      },
+      "severe_storm": {
+        "samples": 2340,
+        "detected": 2322,
+        "missed": 18,
+        "detection_rate": 0.9923076923076923,
+        "missed_event_rate": 0.007692307692307693
+      }
+    },
+    "performance_by_season": {
+      "autumn": {
+        "tp": 2576,
+        "fp": 670,
+        "fn": 844,
+        "tn": 126950,
+        "detection_rate": 0.7532163742690059,
+        "precision": 0.7935921133703019,
+        "recall": 0.7532163742690059,
+        "f1": 0.7728772877287728,
+        "false_alarm_rate": 0.005249960821187901,
+        "missed_event_rate": 0.24678362573099416
+      },
+      "spring": {
+        "tp": 3142,
+        "fp": 610,
+        "fn": 1178,
+        "tn": 127550,
+        "detection_rate": 0.7273148148148149,
+        "precision": 0.8374200426439232,
+        "recall": 0.7273148148148149,
+        "f1": 0.7784935579781963,
+        "false_alarm_rate": 0.004759675405742822,
+        "missed_event_rate": 0.2726851851851852
+      },
+      "summer": {
+        "tp": 1741,
+        "fp": 1076,
+        "fn": 599,
+        "tn": 129064,
+        "detection_rate": 0.744017094017094,
+        "precision": 0.6180333688320909,
+        "recall": 0.744017094017094,
+        "f1": 0.6751987589683925,
+        "false_alarm_rate": 0.008268019056400799,
+        "missed_event_rate": 0.25598290598290596
+      },
+      "winter": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "tn": 87840,
+        "detection_rate": null,
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "false_alarm_rate": 0.0,
+        "missed_event_rate": null
+      }
+    },
+    "performance_by_month": {
+      "01": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1440,
+        "detection_rate": null,
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "false_alarm_rate": 0.0,
+        "missed_event_rate": null
+      },
+      "02": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "tn": 41760,
+        "detection_rate": null,
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "false_alarm_rate": 0.0,
+        "missed_event_rate": null
+      },
+      "03": {
+        "tp": 523,
+        "fp": 143,
+        "fn": 197,
+        "tn": 43777,
+        "detection_rate": 0.7263888888888889,
+        "precision": 0.7852852852852853,
+        "recall": 0.7263888888888889,
+        "f1": 0.7546897546897547,
+        "false_alarm_rate": 0.00325591985428051,
+        "missed_event_rate": 0.27361111111111114
+      },
+      "04": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 180,
+        "tn": 43020,
+        "detection_rate": 0.0,
+        "precision": null,
+        "recall": 0.0,
+        "f1": null,
+        "false_alarm_rate": 0.0,
+        "missed_event_rate": 1.0
+      },
+      "05": {
+        "tp": 2619,
+        "fp": 467,
+        "fn": 801,
+        "tn": 40753,
+        "detection_rate": 0.7657894736842106,
+        "precision": 0.8486714193130266,
+        "recall": 0.7657894736842106,
+        "f1": 0.8051029818628958,
+        "false_alarm_rate": 0.011329451722464823,
+        "missed_event_rate": 0.23421052631578948
+      },
+      "06": {
+        "tp": 255,
+        "fp": 343,
+        "fn": 285,
+        "tn": 42317,
+        "detection_rate": 0.4722222222222222,
+        "precision": 0.42642140468227424,
+        "recall": 0.4722222222222222,
+        "f1": 0.4481546572934974,
+        "false_alarm_rate": 0.008040318799812471,
+        "missed_event_rate": 0.5277777777777778
+      },
+      "07": {
+        "tp": 0,
+        "fp": 73,
+        "fn": 0,
+        "tn": 44567,
+        "detection_rate": null,
+        "precision": 0.0,
+        "recall": null,
+        "f1": null,
+        "false_alarm_rate": 0.001635304659498208,
+        "missed_event_rate": null
+      },
+      "08": {
+        "tp": 1486,
+        "fp": 660,
+        "fn": 314,
+        "tn": 42180,
+        "detection_rate": 0.8255555555555556,
+        "precision": 0.6924510717614166,
+        "recall": 0.8255555555555556,
+        "f1": 0.7531677648251394,
+        "false_alarm_rate": 0.015406162464985995,
+        "missed_event_rate": 0.17444444444444446
+      },
+      "09": {
+        "tp": 964,
+        "fp": 170,
+        "fn": 476,
+        "tn": 41590,
+        "detection_rate": 0.6694444444444444,
+        "precision": 0.8500881834215167,
+        "recall": 0.6694444444444444,
+        "f1": 0.749028749028749,
+        "false_alarm_rate": 0.0040708812260536395,
+        "missed_event_rate": 0.33055555555555555
+      },
+      "10": {
+        "tp": 1612,
+        "fp": 500,
+        "fn": 368,
+        "tn": 42160,
+        "detection_rate": 0.8141414141414142,
+        "precision": 0.7632575757575758,
+        "recall": 0.8141414141414142,
+        "f1": 0.787878787878788,
+        "false_alarm_rate": 0.011720581340834505,
+        "missed_event_rate": 0.18585858585858586
+      },
+      "11": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "tn": 43200,
+        "detection_rate": null,
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "false_alarm_rate": 0.0,
+        "missed_event_rate": null
+      },
+      "12": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "tn": 44640,
+        "detection_rate": null,
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "false_alarm_rate": 0.0,
+        "missed_event_rate": null
+      }
+    },
+    "performance_by_observatory": {
+      "VIC": {
+        "total_samples": 483840,
+        "global_samples": 483840,
+        "tp": 7459,
+        "fp": 2356,
+        "fn": 2621,
+        "tn": 471404,
+        "detection_rate": 0.7399801587301588,
+        "precision": 0.7599592460519613,
+        "recall": 0.7399801587301588,
+        "f1": 0.7498366423724554,
+        "false_alarm_rate": 0.0049729821006416755,
+        "missed_event_rate": 0.2600198412698413
+      }
+    },
+    "performance_by_global_source": {
+      "Kp-only": {
+        "tp": 7459,
+        "fp": 2356,
+        "fn": 2621,
+        "tn": 471404,
+        "detection_rate": 0.7399801587301588,
+        "precision": 0.7599592460519613,
+        "recall": 0.7399801587301588,
+        "f1": 0.7498366423724554,
+        "false_alarm_rate": 0.0049729821006416755,
+        "missed_event_rate": 0.2600198412698413
+      }
+    },
+    "event_level_performance": {
+      "global_events": 22,
+      "events_detected": 15,
+      "events_missed": 7,
+      "event_detection_rate": 0.6818181818181818,
+      "severe_global_events": 4,
+      "severe_events_detected": 4,
+      "severe_events_missed": 0,
+      "severe_event_detection_rate": 1.0,
+      "by_observatory": {
+        "VIC": {
+          "total": 22,
+          "detected": 15,
+          "missed": 7,
+          "severe_total": 4,
+          "severe_detected": 4,
+          "severe_missed": 0
+        }
+      }
+    },
+    "binary_confusion_matrix": {
+      "rows_truth": [
+        "quiet_or_nonstorm",
+        "storm"
+      ],
+      "columns_prediction": [
+        "quiet_or_nonstorm",
+        "storm"
+      ],
+      "matrix": [
+        [
+          471404,
+          2356
+        ],
+        [
+          2621,
+          7459
+        ]
+      ]
+    },
+    "five_level_confusion_matrix": {
+      "rows_truth": [
+        "quiet",
+        "unsettled",
+        "active",
+        "storm",
+        "severe_storm"
+      ],
+      "columns_prediction": [
+        "quiet",
+        "unsettled",
+        "active",
+        "storm",
+        "severe_storm"
+      ],
+      "matrix": [
+        [
+          274555,
+          29591,
+          6162,
+          0,
+          0
+        ],
+        [
+          61747,
+          42590,
+          37386,
+          827,
+          0
+        ],
+        [
+          949,
+          1479,
+          14922,
+          1529,
+          0
+        ],
+        [
+          15,
+          289,
+          2299,
+          4280,
+          857
+        ],
+        [
+          0,
+          0,
+          17,
+          334,
+          1988
+        ]
+      ]
+    },
+    "global_source_samples": {
+      "Kp-only": 483840,
+      "no-global": 0
+    }
+  }
+}

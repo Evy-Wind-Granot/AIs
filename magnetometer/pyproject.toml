@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "magnetometer-pipeline"
+version = "2.0.0"
+description = "Single-station geomagnetic disturbance pipeline (INTERMAGNET + Kp/Dst)"
+readme = "RUNBOOK.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24,<3",
+    "pandas>=2.0,<3",
+    "scipy>=1.10,<2",
+    "requests>=2.31,<3",
+    "PyYAML>=5.4,<7",
+]
+
+[project.optional-dependencies]
+# Structured logs for log aggregation; --log-format json degrades to text
+# without it.
+logging = ["python-json-logger>=2.0,<5"]
+dev = ["flake8==7.1.1", "mypy==2.3.0"]
+
+[project.scripts]
+magnetometer-pipeline = "magnetometer.demos.magnetometer_demo:main_entry"
+magnetometer-calibrate = "calibrate_observatory:main"
+
+[tool.setuptools]
+py-modules = [
+    "calibrate_observatory",
+    "calibrate_thresholds",
+    "tune_thresholds",
+    "validate_periods",
+]
+packages = [
+    "magnetometer",
+    "magnetometer.models",
+    "magnetometer.demos",
+    "magnetometer.calibration",
+    "magnetometer.validation",
+]
