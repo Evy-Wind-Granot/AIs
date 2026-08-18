@@ -52,11 +52,7 @@ def make_forecast_features(
     windows_minutes: Sequence[int] = DEFAULT_WINDOWS_MINUTES,
     lags_minutes: Sequence[int] = DEFAULT_LAGS_MINUTES,
 ) -> pd.DataFrame:
-    """Build a causal feature frame from residual + aligned index columns.
-
-    Expected input columns are ``residual`` and optionally ``kp`` / ``dst``.
-    The index must be a monotonically increasing UTC DatetimeIndex.
-    """
+    """Build a causal feature frame from residual + aligned index columns."""
     if not isinstance(frame.index, pd.DatetimeIndex):
         raise TypeError("frame must use a pandas DatetimeIndex")
     if frame.index.tz is None:
@@ -92,8 +88,9 @@ def make_forecast_features(
         w = _window_samples(minutes, cadence)
         label = f"{minutes}m"
         min_periods = max(2, w // 3)
-        out[f"residual_std_{label}"] = residual.rolling(w, min_periods=min_periods).std()
-        out[f"residual_ptp_{label}"] = residual.rolling(w, min_periods=min_periods).max() - residual.rolling(w, min_periods=min_periods).min()
+        roll = residual.rolling(w, min_periods=min_periods)
+        out[f"residual_std_{label}"] = roll.std()
+        out[f"residual_ptp_{label}"] = roll.max() - roll.min()
         out[f"residual_energy_{label}"] = _rolling_energy(residual, w)
         out[f"abs_residual_mean_{label}"] = residual.abs().rolling(w, min_periods=min_periods).mean()
         out[f"abs_residual_max_{label}"] = residual.abs().rolling(w, min_periods=min_periods).max()
@@ -124,6 +121,12 @@ def make_forecast_features(
     return out
 
 
+def _future_window_max(x: pd.Series, steps: int) -> pd.Series:
+    """Maximum over (t, t+steps] without materializing one column per offset."""
+    shifted = x.shift(-1)
+    return shifted.iloc[::-1].rolling(steps, min_periods=steps).max().iloc[::-1]
+
+
 def make_future_targets(
     residual: pd.Series,
     *,
@@ -131,12 +134,7 @@ def make_future_targets(
     horizons_hours: Sequence[int] = (1, 3, 6),
     storm_threshold_nt: float = 35.0,
 ) -> pd.DataFrame:
-    """Create future peak-amplitude regression and storm-breach targets.
-
-    For each timestamp t and horizon H, the regression target is the maximum
-    absolute residual in the *future* interval (t, t+H], while the binary target
-    indicates whether that interval breaches the configured storm threshold.
-    """
+    """Create future peak-amplitude regression and storm-breach targets."""
     if not isinstance(residual.index, pd.DatetimeIndex):
         raise TypeError("residual must use a DatetimeIndex")
     x = pd.to_numeric(residual, errors="coerce").abs()
@@ -147,13 +145,11 @@ def make_future_targets(
         if horizon <= 0:
             raise ValueError("horizons must be positive")
         steps = max(1, int(round(horizon * 3600.0 / cadence)))
-        future = pd.concat([x.shift(-offset) for offset in range(1, steps + 1)], axis=1)
-        peak = future.max(axis=1, skipna=True)
-        enough_future = x.shift(-steps).notna()
-        peak = peak.where(enough_future)
+        peak = _future_window_max(x, steps)
         out[f"target_peak_abs_{horizon}h"] = peak
-        out[f"target_storm_{horizon}h"] = (peak >= float(storm_threshold_nt)).astype(float)
+        storm = (peak >= float(storm_threshold_nt)).astype(float)
         out.loc[peak.isna(), f"target_storm_{horizon}h"] = np.nan
+        out.loc[peak.notna(), f"target_storm_{horizon}h"] = storm.loc[peak.notna()]
 
     return out
 
