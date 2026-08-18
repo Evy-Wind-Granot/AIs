@@ -15,7 +15,7 @@ The production magnetometer pipeline has an optional ML forecasting layer on top
 
 ## Leakage-safe training protocol
 
-For the current 1h/3h/6h horizons with a 3-hour amplitude target window, the maximum target reach is 9 hours. The training script inserts a **9-hour purge gap** between train/validation and validation/test periods.
+For the current 1h/3h/6h horizons with a 3-hour amplitude target window, the maximum target reach is 9 hours. The training script inserts a **9-hour purge gap** between train/validation/test partitions.
 
 The target at time `t` is the peak-to-peak residual amplitude in:
 
@@ -25,20 +25,27 @@ The target at time `t` is the peak-to-peak residual amplitude in:
 
 so no target sample overlaps the feature timestamp.
 
-The production split is approximately:
+The primary production split is approximately:
 
 ```text
 65% TRAIN | 9h PURGE | 15% VALIDATION | 9h PURGE | 20% TEST
 ```
 
-The untouched test set is never used to select hyperparameters or blend weights.
+The test set is never used to select hyperparameters or blend weights. The final test period is additionally divided into contiguous unseen windows for a stability backtest.
 
 ## Production gate
 
-A model is **not** published as a production artifact unless:
+A model is **not** published as a production artifact unless all configured horizons satisfy all of these conditions:
 
-1. ML beats persistence at every configured horizon on the untouched chronological test set; and
-2. validation does not show more than a 2% MAE regression against persistence at any horizon.
+1. Validation MAE does not regress more than 2% versus persistence.
+2. Validation RMSE does not regress more than 2% versus persistence.
+3. Aggregate chronological test MAE beats persistence.
+4. Aggregate chronological test RMSE does not regress more than 2%.
+5. Across the default four contiguous unseen test folds, mean and median MAE improvement are positive.
+6. At least 75% of the unseen folds improve MAE over persistence.
+7. No unseen fold regresses by more than 5% in MAE or RMSE.
+
+This deliberately prevents a model from being declared production-ready because it happens to perform well during one favourable storm or quiet period. The gate is a stability gate, not merely a single-case benchmark.
 
 If the gate fails, training exits with status `3` and leaves the production artifact untouched.
 
@@ -64,8 +71,9 @@ The script:
 5. Calibrates the ML/persistence blend using validation only.
 6. Reports ML versus persistence MAE/RMSE and storm precision/recall/F1.
 7. Refits only on train + validation.
-8. Applies the untouched test-set production gate.
-9. Writes `models/artifacts/<observatory>_forecaster.pkl` only after the gate passes.
+8. Evaluates the frozen model on multiple contiguous unseen test folds.
+9. Applies the stability-aware production gate.
+10. Writes `models/artifacts/<observatory>_forecaster.pkl` only after the gate passes.
 
 If Dst is unavailable from Kyoto WDC, training continues without Dst and records that limitation in model metadata. It does not fabricate Dst values.
 
