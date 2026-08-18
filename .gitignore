@@ -6,3 +6,7 @@ venv_moirai/
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Magnetometer runtime/model artifacts
+magnetometer/data/models/
+.magnetometer_state.json
