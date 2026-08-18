@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run the deterministic magnetometer pipeline with optional ML forecasting.
 
-This wrapper intentionally composes the existing ``magnetometer_demo`` flow
-rather than duplicating its QDC/Harmonic implementation. Deterministic current
-classification remains authoritative; the ML model is a forward-looking layer.
+This wrapper composes the existing deterministic QDC/Harmonic implementation.
+Deterministic current classification remains authoritative; the ML model is a
+forward-looking advisory layer.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
@@ -36,14 +36,19 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("magnetometer_hybrid")
 
 
-def _fetch_dst(start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
-    parts = []
+def _fetch_dst(start: pd.Timestamp, end: pd.Timestamp) -> pd.Series | None:
+    """Fetch Dst or return None when no usable reference data is available."""
+    parts: list[pd.Series] = []
     months = pd.period_range(start.strftime("%Y-%m"), end.strftime("%Y-%m"), freq="M")
     for period in months:
         value = fetch_dst_kyoto(int(period.year), int(period.month))
         if value is not None and not value.empty:
             parts.append(value)
-    return pd.concat(parts).sort_index() if parts else pd.Series(dtype=float)
+    if not parts:
+        return None
+    result = pd.concat(parts).sort_index()
+    result.index = pd.to_datetime(result.index, utc=True)
+    return result.astype(float)
 
 
 def run_hybrid(
@@ -53,6 +58,9 @@ def run_hybrid(
     model_path: str | None,
     column: str = "f_nt",
 ) -> Dict[str, Any]:
+    if days <= 0:
+        raise ValueError("days must be positive")
+
     raw = fetch_intermagnet_iaga2002(
         observatory=observatory,
         start_date=start_date,
@@ -62,13 +70,29 @@ def run_hybrid(
     df = parse_iaga2002_to_dataframe(raw)
     if df.empty:
         raise RuntimeError("INTERMAGNET returned no samples.")
+    if column not in df.columns:
+        raise ValueError(f"Requested magnetometer column {column!r} is unavailable.")
 
     series = handle_gaps(df[column], max_gap_samples=3)
+    valid_samples = int(series.notna().sum())
+    if valid_samples == 0:
+        raise RuntimeError(
+            f"INTERMAGNET returned {len(series)} timestamps but zero valid samples in {column!r}; "
+            "refusing to run QDC/ML inference on an all-missing window."
+        )
+
+    completeness = valid_samples / max(1, len(series))
+    if completeness < 0.50:
+        raise RuntimeError(
+            f"Insufficient {column} data for live inference: {valid_samples}/{len(series)} "
+            f"({completeness:.1%}) valid samples."
+        )
+
     cadence = df.index.to_series().diff().dropna().dt.total_seconds().median()
     cadence_s = float(cadence) if np.isfinite(cadence) and cadence > 0 else 60.0
 
-    start_dt = pd.to_datetime(df.index.min())
-    end_dt = pd.to_datetime(df.index.max())
+    start_dt = pd.to_datetime(df.index.min(), utc=True)
+    end_dt = pd.to_datetime(df.index.max(), utc=True)
     kp = fetch_kp_gfz(start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
     dst = _fetch_dst(start_dt, end_dt)
 
@@ -89,6 +113,7 @@ def run_hybrid(
             "observatory": observatory,
             "window_start": df.index[0].isoformat(),
             "window_end": df.index[-1].isoformat(),
+            "data_completeness": completeness,
         },
         "forecast": None,
         "hybrid": {"enabled": False, "error": None},
@@ -114,7 +139,7 @@ def run_hybrid(
                 "hybrid": {**hybrid["hybrid"], "enabled": True, "error": None},
             })
         except Exception as exc:
-            # ML is advisory. A model failure must never suppress the current
+            # ML is advisory. A model failure must never suppress current
             # deterministic status or turn a healthy monitor into a hard fault.
             logger.exception("ML forecasting failed; returning deterministic status only.")
             payload["hybrid"] = {"enabled": False, "error": str(exc), "degraded": True}
