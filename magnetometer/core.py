@@ -60,7 +60,7 @@ def cross_validate_flags(local_flags, dst_vals, kp_vals):
 
 
 def _set_deterministic_hybrid(result: Dict[str, Any]) -> None:
-    """Populate the unified status fields when ML is unavailable."""
+    """Populate unified status fields when ML is unavailable."""
     flags = np.asarray(result.get("flags", []), dtype=object)
     current = str(flags[-1]) if len(flags) else "unknown"
     result["hybrid"] = {
@@ -85,7 +85,7 @@ def _attach_ml_forecast(
     kp_series: Any,
     dst_series: Any,
 ) -> Dict[str, Any]:
-    """Attach a fail-safe short-horizon ML forecast to a deterministic result."""
+    """Attach a fail-safe short-horizon ML forecast."""
     import os
     import pandas as pd
 
@@ -98,11 +98,11 @@ def _attach_ml_forecast(
         }
         return result
 
+    default_artifact = Path("models") / "artifacts" / (
+        f"{observatory.lower()}_forecaster.pkl"
+    )
     artifact = Path(
-        os.environ.get(
-            "MAGNETOMETER_FORECAST_MODEL",
-            str(Path("models") / "artifacts" / f"{observatory.lower()}_forecaster.pkl"),
-        )
+        os.environ.get("MAGNETOMETER_FORECAST_MODEL", str(default_artifact))
     )
     if not artifact.exists():
         result["forecast"] = {
@@ -161,7 +161,9 @@ def _attach_ml_forecast(
             direction = "escalating"
         elif min(deltas, default=0) <= -2:
             direction = "decaying"
-        confidence = float(np.mean([f["confidence"] for f in forecasts.values()]))
+        confidence = float(
+            np.mean([f["confidence"] for f in forecasts.values()])
+        )
 
         result["forecast"] = {
             "enabled": True,
@@ -174,7 +176,9 @@ def _attach_ml_forecast(
         }
         result["hybrid"] = {
             "real_time": {"tier": current},
-            "forecasted_status": {str(k): v["predicted_tier"] for k, v in forecasts.items()},
+            "forecasted_status": {
+                str(k): v["predicted_tier"] for k, v in forecasts.items()
+            },
             "model_confidence": confidence,
             "divergence": {
                 "tier_delta": int(max_abs_delta),
@@ -184,7 +188,9 @@ def _attach_ml_forecast(
             },
         }
     except Exception as exc:  # pragma: no cover - deployment failure path
-        _legacy.logger.exception("ML forecast unavailable; deterministic result retained")
+        _legacy.logger.exception(
+            "ML forecast unavailable; deterministic result retained"
+        )
         result["forecast"] = {
             "enabled": False,
             "status": "inference_error",
