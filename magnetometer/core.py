@@ -27,27 +27,16 @@ def load_config(path: str):
 
 
 def disturbance_amplitude(residual, cadence_s):
-    return _classification.disturbance_amplitude(
-        residual, cadence_s,
-        window_min=_legacy.FLAG_AMPLITUDE_WINDOW_MIN,
-        mode=_legacy.FLAG_AMPLITUDE_MODE,
-        centered=_legacy.FLAG_AMPLITUDE_CENTERED,
-    )
+    return _classification.disturbance_amplitude(residual, cadence_s, window_min=_legacy.FLAG_AMPLITUDE_WINDOW_MIN, mode=_legacy.FLAG_AMPLITUDE_MODE, centered=_legacy.FLAG_AMPLITUDE_CENTERED)
 
 
 def flag_activity(residual, cadence_s=60.0):
     return _classification.flag_activity(
-        residual, cadence_s,
-        window_min=_legacy.FLAG_AMPLITUDE_WINDOW_MIN,
-        mode=_legacy.FLAG_AMPLITUDE_MODE,
-        centered=_legacy.FLAG_AMPLITUDE_CENTERED,
-        unsettled_nt=_legacy.FLAG_THRESHOLD_UNSETTLED_NT,
-        active_nt=_legacy.FLAG_THRESHOLD_ACTIVE_NT,
-        minor_storm_nt=_legacy.FLAG_THRESHOLD_MINOR_STORM_NT,
-        major_storm_nt=_legacy.FLAG_THRESHOLD_MAJOR_STORM_NT,
-        severe_storm_nt=_legacy.FLAG_THRESHOLD_SEVERE_STORM_NT,
-        anomaly_jump_nt=_legacy.FLAG_THRESHOLD_ANOMALY_JUMP_NT,
-        max_plausible_nt=_legacy.MAX_PLAUSIBLE_RESIDUAL_NT,
+        residual, cadence_s, window_min=_legacy.FLAG_AMPLITUDE_WINDOW_MIN, mode=_legacy.FLAG_AMPLITUDE_MODE,
+        centered=_legacy.FLAG_AMPLITUDE_CENTERED, unsettled_nt=_legacy.FLAG_THRESHOLD_UNSETTLED_NT,
+        active_nt=_legacy.FLAG_THRESHOLD_ACTIVE_NT, minor_storm_nt=_legacy.FLAG_THRESHOLD_MINOR_STORM_NT,
+        major_storm_nt=_legacy.FLAG_THRESHOLD_MAJOR_STORM_NT, severe_storm_nt=_legacy.FLAG_THRESHOLD_SEVERE_STORM_NT,
+        anomaly_jump_nt=_legacy.FLAG_THRESHOLD_ANOMALY_JUMP_NT, max_plausible_nt=_legacy.MAX_PLAUSIBLE_RESIDUAL_NT,
         min_plausible_nt=_legacy.MIN_PLAUSIBLE_RESIDUAL_NT,
     )
 
@@ -62,23 +51,13 @@ def _set_deterministic_hybrid(result: Dict[str, Any]) -> None:
     current = str(flags[-1]) if len(flags) else "unknown"
     result["hybrid"] = {
         "real_time": {"tier": current, "source": "deterministic_qdc"},
-        "forecasted_status": {},
-        "model_confidence": {},
-        "divergence": {
-            "tier_delta": 0,
-            "signed_tier_delta": 0,
-            "significant": False,
-            "direction": "none",
-            "anomaly_delta": 0,
-        },
+        "forecasted_status": {}, "model_confidence": {},
+        "divergence": {"tier_delta": 0, "signed_tier_delta": 0, "significant": False, "direction": "none", "anomaly_delta": 0},
     }
 
 
-def _attach_ml_forecast(
-    result: Dict[str, Any], *, cadence_s: float, observatory: str,
-    start_time: Any, analysis_start_time: Any, kp_series: Any, dst_series: Any,
-) -> Dict[str, Any]:
-    """Attach a fail-safe short-horizon ML forecast to deterministic analysis."""
+def _attach_ml_forecast(result: Dict[str, Any], *, cadence_s: float, observatory: str, start_time: Any, analysis_start_time: Any, kp_series: Any, dst_series: Any) -> Dict[str, Any]:
+    """Attach only production-approved ML horizons; retain experimental forecasts separately."""
     import os
     import pandas as pd
 
@@ -91,11 +70,7 @@ def _attach_ml_forecast(
     default_artifact = Path("models") / "artifacts" / f"{observatory.lower()}_forecaster.pkl"
     artifact = Path(os.environ.get("MAGNETOMETER_FORECAST_MODEL", str(default_artifact)))
     if not artifact.exists():
-        result["forecast"] = {
-            "enabled": False,
-            "status": "model_not_trained",
-            "artifact": str(artifact),
-        }
+        result["forecast"] = {"enabled": False, "status": "model_not_trained", "artifact": str(artifact)}
         return result
 
     try:
@@ -103,17 +78,15 @@ def _attach_ml_forecast(
 
         model = load_model(artifact)
         health = model.health_check()
-        if health.get("production_gate") != "passed":
-            raise RuntimeError("forecast artifact is not production-approved; retrain until the production gate passes")
+        approved = {int(h) for h in health.get("approved_horizons_hours", [])}
+        if not approved:
+            raise RuntimeError("forecast artifact has no production-approved horizons")
 
         residual = np.asarray(result.get("residual"), dtype=float)
         anchor = analysis_start_time if analysis_start_time is not None else start_time
         if anchor is None:
             raise ValueError("inference requires start_time or analysis_start_time")
-        index = pd.date_range(
-            pd.to_datetime(anchor, utc=True), periods=len(residual),
-            freq=pd.Timedelta(seconds=cadence_s),
-        )
+        index = pd.date_range(pd.to_datetime(anchor, utc=True), periods=len(residual), freq=pd.Timedelta(seconds=cadence_s))
         residual_series = pd.Series(residual, index=index)
 
         def align(source: Any) -> pd.Series | None:
@@ -128,14 +101,10 @@ def _attach_ml_forecast(
                 return None
             return pd.Series(values, index=index)
 
-        features, _ = build_training_data(
-            residual_series,
-            align(kp_series),
-            align(dst_series),
-            cadence_s=cadence_s,
-            config=model.config,
-        )
-        forecasts = model.predict(features)
+        features, _ = build_training_data(residual_series, align(kp_series), align(dst_series), cadence_s=cadence_s, config=model.config)
+        all_forecasts = model.predict(features)
+        forecasts = {h: value for h, value in all_forecasts.items() if int(h) in approved}
+        experimental = {h: value for h, value in all_forecasts.items() if int(h) not in approved}
         flags = np.asarray(result.get("flags", []), dtype=object)
         current = str(flags[-1]) if len(flags) else "unknown"
         current_rank = _LEVELS.index(current) if current in _LEVELS else None
@@ -143,8 +112,7 @@ def _attach_ml_forecast(
         deltas: dict[int, int] = {}
         if current_rank is not None:
             for horizon, forecast in forecasts.items():
-                predicted = forecast["predicted_tier"]
-                deltas[int(horizon)] = _LEVELS.index(predicted) - current_rank
+                deltas[int(horizon)] = _LEVELS.index(forecast["predicted_tier"]) - current_rank
         max_signed = max(deltas.values(), default=0)
         min_signed = min(deltas.values(), default=0)
         max_abs = max((abs(value) for value in deltas.values()), default=0)
@@ -155,14 +123,10 @@ def _attach_ml_forecast(
             direction = "decaying"
 
         result["forecast"] = {
-            "enabled": True,
-            "status": "ok",
-            "artifact": str(artifact),
-            "model_health": health,
+            "enabled": True, "status": "ok", "artifact": str(artifact), "model_health": health,
             "horizons": {str(k): v for k, v in forecasts.items()},
-            "current_tier": current,
-            "max_tier_delta": int(max_abs),
-            "signed_tier_delta": int(max_signed),
+            "experimental_horizons": {str(k): v for k, v in experimental.items()},
+            "current_tier": current, "max_tier_delta": int(max_abs), "signed_tier_delta": int(max_signed),
             "early_warning": bool(max_signed >= 2),
         }
         result["hybrid"] = {
@@ -170,21 +134,14 @@ def _attach_ml_forecast(
             "forecasted_status": {str(k): v["predicted_tier"] for k, v in forecasts.items()},
             "model_confidence": {str(k): float(v["confidence"]) for k, v in forecasts.items()},
             "divergence": {
-                "tier_delta": int(max_abs),
-                "signed_tier_delta": int(max_signed),
-                "significant": bool(max_abs >= 2),
-                "direction": direction,
-                "anomaly_delta": int(max_abs),
+                "tier_delta": int(max_abs), "signed_tier_delta": int(max_signed), "significant": bool(max_abs >= 2),
+                "direction": direction, "anomaly_delta": int(max_abs),
             },
+            "experimental_horizons": sorted(int(h) for h in experimental),
         }
     except Exception as exc:  # pragma: no cover - deployment failure path
         _legacy.logger.exception("ML forecast unavailable; deterministic result retained")
-        result["forecast"] = {
-            "enabled": False,
-            "status": "inference_error",
-            "error": str(exc),
-            "artifact": str(artifact),
-        }
+        result["forecast"] = {"enabled": False, "status": "inference_error", "error": str(exc), "artifact": str(artifact)}
     return result
 
 
@@ -193,13 +150,9 @@ def run_analysis(*args, **kwargs):
     result = _DETERMINISTIC_RUN_ANALYSIS(*args, **kwargs)
     cadence_s = float(args[1] if len(args) > 1 else kwargs.get("cadence_s", 60.0))
     return _attach_ml_forecast(
-        result,
-        cadence_s=cadence_s,
-        observatory=str(kwargs.get("observatory", "-")),
-        start_time=kwargs.get("start_time"),
-        analysis_start_time=kwargs.get("analysis_start_time"),
-        kp_series=kwargs.get("kp_series"),
-        dst_series=kwargs.get("dst_series"),
+        result, cadence_s=cadence_s, observatory=str(kwargs.get("observatory", "-")),
+        start_time=kwargs.get("start_time"), analysis_start_time=kwargs.get("analysis_start_time"),
+        kp_series=kwargs.get("kp_series"), dst_series=kwargs.get("dst_series"),
     )
 
 
