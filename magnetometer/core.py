@@ -116,6 +116,13 @@ def _attach_ml_forecast(
         from models.forecaster import build_training_data, load_model
 
         model = load_model(artifact)
+        gate = model.training_metadata.get("production_gate")
+        if gate != "passed":
+            raise RuntimeError(
+                "forecast artifact is not production-approved; "
+                "retrain without --allow-nonbeating"
+            )
+
         residual = np.asarray(result.get("residual"), dtype=float)
         anchor = analysis_start_time if analysis_start_time is not None else start_time
         if anchor is None:
