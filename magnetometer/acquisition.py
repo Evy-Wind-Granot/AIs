@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
@@ -25,7 +26,7 @@ logger = logging.getLogger("magnetometer_pipeline")
 
 INTERMAGNET_BASE = "https://imag-data.bgs.ac.uk/GIN_V1/GINServices"
 KP_GFZ_URL = "https://kp.gfz-potsdam.de/app/json/"
-USER_AGENT = "MagnetometerProductionPipeline/2.0.0"
+USER_AGENT = "MagnetometerProductionPipeline/2.1.0"
 HTTP_CACHE_ENABLED = True
 HTTP_CACHE_DIR = ".magnetometer_cache"
 HTTP_CACHE_TTL_HOURS = 24.0
@@ -38,41 +39,120 @@ class AcquisitionError(RuntimeError):
 class AcquisitionClient:
     """Reusable, thread-safe acquisition client.
 
-    A session is created once per client and uses urllib3 retries for transient
-    upstream failures. Historical responses use the same cache-key and file
-    layout as the previous monolithic implementation.
+    The HTTP layer retries both ordinary transient HTTP failures and transport
+    failures such as truncated chunked responses. Historical responses are
+    cached only after a complete successful response has been received.
     """
 
     __slots__ = ("session", "cache", "_dst_unavailable", "_dst_lock")
 
-    def __init__(self, *, session: Optional[requests.Session] = None, cache_enabled: bool = HTTP_CACHE_ENABLED, cache_dir: str = HTTP_CACHE_DIR, cache_ttl_hours: float = HTTP_CACHE_TTL_HOURS) -> None:
+    def __init__(
+        self,
+        *,
+        session: Optional[requests.Session] = None,
+        cache_enabled: bool = HTTP_CACHE_ENABLED,
+        cache_dir: str = HTTP_CACHE_DIR,
+        cache_ttl_hours: float = HTTP_CACHE_TTL_HOURS,
+    ) -> None:
         self.session = session or create_resilient_session()
         self.cache = ResponseCache(cache_dir, cache_ttl_hours) if cache_enabled else None
         self._dst_unavailable: set[Tuple[int, int]] = set()
         self._dst_lock = threading.Lock()
 
-    def get_text(self, url: str, params: Optional[Dict[str, Any]] = None, *, timeout: float = 30.0, cacheable: bool = True) -> Tuple[int, str]:
+    def get_text(
+        self,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        timeout: float = 30.0,
+        cacheable: bool = True,
+        transport_retries: int = 4,
+    ) -> Tuple[int, str]:
+        """GET text with explicit retries for incomplete HTTP bodies.
+
+        ``urllib3.Retry`` handles HTTP status retries, but a server/proxy can
+        also terminate a chunked response after only part of the body has been
+        delivered. ``requests`` surfaces that as ``ChunkedEncodingError`` or
+        ``ConnectionError`` while reading ``response.text``; those failures
+        are safe to retry for idempotent GET requests.
+        """
         key = ResponseCache.key(url, params)
         if cacheable and self.cache is not None:
             hit = self.cache.get(key)
             if hit is not None:
                 logger.debug("Cache hit for %s", url)
                 return hit
-        response = self.session.get(url, params=params, timeout=timeout)
-        result = (response.status_code, response.text)
-        if cacheable and response.status_code == 200 and self.cache is not None:
-            self.cache.put(key, *result)
-        return result
 
-    def fetch_station(self, observatory: str = "VIC", start_date: Optional[str] = None, duration_days: int = 7, samples_per_day: str = "Minute") -> str:
+        last_error: Optional[Exception] = None
+        for attempt in range(transport_retries + 1):
+            try:
+                response = self.session.get(url, params=params, timeout=timeout)
+                # Force complete body consumption here so a truncated chunked
+                # transfer is detected before anything is cached or returned.
+                text = response.text
+                result = (response.status_code, text)
+                if cacheable and response.status_code == 200 and self.cache is not None:
+                    self.cache.put(key, *result)
+                return result
+            except (
+                requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+            ) as exc:
+                last_error = exc
+                if attempt >= transport_retries:
+                    break
+                delay = min(2.0 ** attempt, 10.0)
+                logger.warning(
+                    "Transient upstream transport failure for %s (attempt %d/%d): %s; retrying in %.1fs",
+                    url,
+                    attempt + 1,
+                    transport_retries + 1,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
+
+        raise AcquisitionError(
+            f"Unable to download complete response from {url} after "
+            f"{transport_retries + 1} attempts"
+        ) from last_error
+
+    def fetch_station(
+        self,
+        observatory: str = "VIC",
+        start_date: Optional[str] = None,
+        duration_days: int = 7,
+        samples_per_day: str = "Minute",
+    ) -> str:
         if start_date is None:
             start_date = "2024-01-01"
-        params = {"Request": "GetData", "observatoryIagaCode": observatory, "samplesPerDay": samples_per_day, "dataStartDate": start_date, "dataDuration": duration_days, "format": "iaga2002", "orientation": "XYZF"}
-        logger.info("Fetching INTERMAGNET data for %s from %s (%s days)...", observatory, start_date, duration_days)
+        params = {
+            "Request": "GetData",
+            "observatoryIagaCode": observatory,
+            "samplesPerDay": samples_per_day,
+            "dataStartDate": start_date,
+            "dataDuration": duration_days,
+            "format": "iaga2002",
+            "orientation": "XYZF",
+        }
+        logger.info(
+            "Fetching INTERMAGNET data for %s from %s (%s days)...",
+            observatory,
+            start_date,
+            duration_days,
+        )
         end_date = pd.to_datetime(start_date, utc=True) + pd.Timedelta(days=duration_days)
-        status, text = self.get_text(INTERMAGNET_BASE, params=params, timeout=60, cacheable=_window_is_historical(end_date))
+        status, text = self.get_text(
+            INTERMAGNET_BASE,
+            params=params,
+            timeout=60,
+            cacheable=_window_is_historical(end_date),
+        )
         if status >= 400:
-            raise requests.HTTPError(f"INTERMAGNET returned HTTP {status} for {observatory}")
+            raise requests.HTTPError(
+                f"INTERMAGNET returned HTTP {status} for {observatory}"
+            )
         return text
 
     def fetch_kp(self, start_date: str, end_date: str) -> pd.Series:
@@ -84,7 +164,11 @@ class AcquisitionClient:
         if status >= 400:
             raise requests.HTTPError(f"Kp service returned HTTP {status}")
         data = json.loads(text)
-        series = pd.Series(pd.array(data["Kp"], dtype=float), index=pd.DatetimeIndex(pd.to_datetime(data["datetime"], utc=True)), name="kp")
+        series = pd.Series(
+            pd.array(data["Kp"], dtype=float),
+            index=pd.DatetimeIndex(pd.to_datetime(data["datetime"], utc=True)),
+            name="kp",
+        )
         series.index.name = "datetime"
         return series.sort_index()
 
@@ -98,12 +182,15 @@ class AcquisitionClient:
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_provisional/{year:04d}{mm:02d}/dst{yy:02d}{mm:02d}.for",
             f"https://wdc.kugi.kyoto-u.ac.jp/dst_realtime/{year:04d}{mm:02d}/dst{yy:02d}{mm:02d}.for",
         ]
-        cacheable = _window_is_historical(pd.Timestamp(year=year, month=month, day=1, tz="UTC") + pd.DateOffset(months=1))
+        cacheable = _window_is_historical(
+            pd.Timestamp(year=year, month=month, day=1, tz="UTC")
+            + pd.DateOffset(months=1)
+        )
 
         def try_url(url: str) -> Optional[str]:
             try:
                 status, body = self.get_text(url, timeout=15, cacheable=cacheable)
-            except requests.RequestException:
+            except (requests.RequestException, AcquisitionError):
                 return None
             if status == 200 and "Not Found" not in body and "<html" not in body.lower():
                 return body
@@ -115,7 +202,11 @@ class AcquisitionClient:
         if text is None:
             with self._dst_lock:
                 self._dst_unavailable.add((year, month))
-            logger.warning("Dst index unavailable for %04d-%02d from Kyoto WDC (server down or restricted). Skipping Dst.", year, month)
+            logger.warning(
+                "Dst index unavailable for %04d-%02d from Kyoto WDC (server down or restricted). Skipping Dst.",
+                year,
+                month,
+            )
             return None
 
         rows = []
@@ -128,7 +219,12 @@ class AcquisitionClient:
                 for hour in range(24):
                     value = hourly_part[hour * 4 : (hour + 1) * 4].strip()
                     if value and value != "9999":
-                        rows.append({"datetime": datetime(year, month, day, hour, tzinfo=timezone.utc), "dst": int(value)})
+                        rows.append(
+                            {
+                                "datetime": datetime(year, month, day, hour, tzinfo=timezone.utc),
+                                "dst": int(value),
+                            }
+                        )
             except (ValueError, IndexError):
                 continue
         if not rows:
@@ -136,10 +232,24 @@ class AcquisitionClient:
         return pd.DataFrame(rows).set_index("datetime")["dst"].sort_index()
 
 
-def create_resilient_session(retries: int = 3, backoff_factor: float = 1.0, status_forcelist: Tuple[int, ...] = (429, 500, 502, 503, 504)) -> requests.Session:
+def create_resilient_session(
+    retries: int = 3,
+    backoff_factor: float = 1.0,
+    status_forcelist: Tuple[int, ...] = (429, 500, 502, 503, 504),
+) -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
-    retry_strategy = Retry(total=retries, backoff_factor=backoff_factor, status_forcelist=status_forcelist, allowed_methods=frozenset({"GET", "HEAD", "POST"}), respect_retry_after_header=True, raise_on_status=False)
+    retry_strategy = Retry(
+        total=retries,
+        connect=retries,
+        read=retries,
+        status=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+        allowed_methods=frozenset({"GET", "HEAD", "POST"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
@@ -163,21 +273,14 @@ fetch_kp_gfz = DEFAULT_ACQUISITION.fetch_kp
 
 
 def fetch_dst_kyoto(year_or_month, month: Optional[int] = None) -> Optional[pd.Series]:
-    """Compatibility wrapper accepting either ``(year, month)`` or two args.
-
-    The runner historically submits ``(year, month)`` tuples to a thread pool,
-    while direct callers commonly pass two positional arguments.
-    """
+    """Compatibility wrapper accepting either ``(year, month)`` or two args."""
     if month is None:
         try:
             year, month = year_or_month
         except (TypeError, ValueError) as exc:
-            raise TypeError("fetch_dst_kyoto expects (year, month) or year, month") from exc
+            raise TypeError(
+                "fetch_dst_kyoto expects (year, month) or year, month"
+            ) from exc
     else:
         year = year_or_month
     return DEFAULT_ACQUISITION.fetch_dst(int(year), int(month))
-
-
-http_get_text = DEFAULT_ACQUISITION.get_text
-
-__all__ = ["AcquisitionClient", "AcquisitionError", "DEFAULT_ACQUISITION", "create_resilient_session", "fetch_intermagnet_iaga2002", "fetch_kp_gfz", "fetch_dst_kyoto", "http_get_text"]
