@@ -1,0 +1,8 @@
+
+# Local Python environments
+venv/
+venv_moirai/
+
+# Python cache
+__pycache__/
+*.py[cod]
