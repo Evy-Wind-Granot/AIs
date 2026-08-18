@@ -1,4 +1,10 @@
-"""Production short-horizon hybrid geomagnetic forecaster."""
+"""Production short-horizon hybrid geomagnetic forecaster.
+
+The forecaster deliberately remains a fast tabular time-series model.  The
+harmonic/QDC residual and causal rolling statistics are the feature layer;
+this module is responsible only for supervised future-amplitude prediction,
+storm-threshold probability, evaluation, and production-safe serialization.
+"""
 from __future__ import annotations
 
 import pickle
@@ -31,10 +37,13 @@ class ForecastConfig:
     unsettled_nt: float = 20.0
     active_nt: float = 30.0
     random_state: int = 42
-    max_iter: int = 250
+    max_iter: int = 300
     learning_rate: float = 0.05
     max_leaf_nodes: int = 31
     min_samples_leaf: int = 30
+    l2_regularization: float = 1.0
+    regression_loss: str = "absolute_error"
+    early_stopping: bool = False
     confidence_min_samples: int = 100
 
     def __post_init__(self) -> None:
@@ -48,6 +57,10 @@ class ForecastConfig:
             raise ValueError("largest feature window cannot exceed lookback_hours")
         if self.amplitude_window_min <= 0:
             raise ValueError("amplitude_window_min must be positive")
+        if self.regression_loss not in {"squared_error", "absolute_error", "huber", "quantile"}:
+            raise ValueError("unsupported regression_loss")
+        if self.learning_rate <= 0 or self.max_iter <= 0 or self.min_samples_leaf <= 0:
+            raise ValueError("invalid boosting hyperparameters")
 
 
 @dataclass(frozen=True)
@@ -82,7 +95,7 @@ class _HorizonModel:
 
 @dataclass
 class GeomagneticForecaster:
-    """Multi-horizon gradient boosting model with a persistence safety baseline."""
+    """Multi-horizon gradient boosting model with persistence safety blending."""
 
     config: ForecastConfig = field(default_factory=ForecastConfig)
     feature_columns: tuple[str, ...] = ()
@@ -92,14 +105,19 @@ class GeomagneticForecaster:
     training_metadata: dict[str, Any] = field(default_factory=dict)
 
     def _regressor(self) -> HistGradientBoostingRegressor:
-        return HistGradientBoostingRegressor(
-            learning_rate=self.config.learning_rate,
-            max_iter=self.config.max_iter,
-            max_leaf_nodes=self.config.max_leaf_nodes,
-            min_samples_leaf=self.config.min_samples_leaf,
-            l2_regularization=0.5,
-            random_state=self.config.random_state,
-        )
+        kwargs: dict[str, Any] = {
+            "loss": self.config.regression_loss,
+            "learning_rate": self.config.learning_rate,
+            "max_iter": self.config.max_iter,
+            "max_leaf_nodes": self.config.max_leaf_nodes,
+            "min_samples_leaf": self.config.min_samples_leaf,
+            "l2_regularization": self.config.l2_regularization,
+            "early_stopping": self.config.early_stopping,
+            "random_state": self.config.random_state,
+        }
+        if self.config.regression_loss == "quantile":
+            kwargs["quantile"] = 0.5
+        return HistGradientBoostingRegressor(**kwargs)
 
     def _classifier(self, y: np.ndarray) -> Any:
         if np.unique(y).size < 2:
@@ -109,18 +127,24 @@ class GeomagneticForecaster:
             max_iter=self.config.max_iter,
             max_leaf_nodes=self.config.max_leaf_nodes,
             min_samples_leaf=self.config.min_samples_leaf,
-            l2_regularization=0.5,
+            l2_regularization=self.config.l2_regularization,
+            early_stopping=self.config.early_stopping,
             random_state=self.config.random_state,
         )
 
     @staticmethod
     def _prepare_X(frame: pd.DataFrame, columns: Sequence[str] | None = None) -> pd.DataFrame:
+        if frame.empty:
+            raise ValueError("feature frame cannot be empty")
         X = frame.copy()
         if columns is not None:
             missing = [c for c in columns if c not in X.columns]
             if missing:
                 raise ValueError(f"missing feature columns: {missing[:8]}")
             X = X.loc[:, list(columns)]
+        non_numeric = [c for c in X.columns if not pd.api.types.is_numeric_dtype(X[c])]
+        if non_numeric:
+            raise TypeError(f"non-numeric feature columns: {non_numeric[:8]}")
         return X.replace([np.inf, -np.inf], np.nan)
 
     @staticmethod
@@ -146,8 +170,8 @@ class GeomagneticForecaster:
         """Fit one delta regressor and storm classifier per horizon."""
         if not isinstance(features.index, pd.DatetimeIndex):
             raise TypeError("features must use a DatetimeIndex")
-        if not features.index.is_monotonic_increasing:
-            raise ValueError("features must be chronologically ordered")
+        if not features.index.is_monotonic_increasing or features.index.has_duplicates:
+            raise ValueError("features must be chronologically ordered and unique")
         if not targets:
             raise ValueError("targets cannot be empty")
 
@@ -180,7 +204,7 @@ class GeomagneticForecaster:
 
         self.fitted = True
         self.training_metadata = {
-            "schema_version": 2,
+            "schema_version": 3,
             "n_samples": int(len(features)),
             "feature_count": int(len(self.feature_columns)),
             "training_samples_by_horizon": sample_counts,
@@ -190,16 +214,13 @@ class GeomagneticForecaster:
             "target": "future peak-to-peak amplitude",
             "regression_target": "future amplitude minus causal persistence amplitude",
             "persistence_feature": "persistence_amplitude_nt",
+            "regression_loss": self.config.regression_loss,
+            "early_stopping": self.config.early_stopping,
         }
         return self
 
     def calibrate_blend(self, features: pd.DataFrame, targets: Mapping[int, pd.Series]) -> dict[int, float]:
-        """Choose a validation-only ML/persistence blend weight by MAE.
-
-        The weight is selected from a coarse grid and is therefore deterministic.
-        The persistence baseline is always available; a weight of zero means the
-        production model falls back to persistence for that horizon.
-        """
+        """Select a validation-only ML/persistence blend weight by MAE."""
         if not self.fitted:
             raise RuntimeError("forecaster is not fitted")
         X = self._prepare_X(features, self.feature_columns)
@@ -231,9 +252,11 @@ class GeomagneticForecaster:
         """Predict all horizons from the final causal feature row."""
         if not self.fitted or not self.models:
             raise RuntimeError("forecaster is not fitted")
-        if features.empty:
-            raise ValueError("features cannot be empty")
         X = self._prepare_X(features, self.feature_columns).tail(1)
+        baseline = float(self._baseline(X).iloc[0])
+        if not np.isfinite(baseline):
+            raise ValueError("latest causal persistence amplitude is unavailable")
+
         quality = 1.0
         for column in ("residual_missing_15m", "residual_missing_3h"):
             if column in X:
@@ -241,23 +264,34 @@ class GeomagneticForecaster:
         for column in ("kp_available", "dst_available"):
             if column in X:
                 quality *= 0.75 + 0.25 * float(X[column].iloc[0])
+        quality = float(max(0.0, min(1.0, quality)))
+
         results: dict[int, dict[str, Any]] = {}
         for horizon in self.config.horizons_hours:
             bundle = self.models[horizon]
             amplitude = float(self._blended_predictions(X, horizon)[0])
+            raw = float(self._raw_predictions(X, horizon)[0])
+            weight = float(self.blend_weights.get(horizon, 1.0))
             probabilities = bundle.classifier.predict_proba(X)[0]
             classes = list(getattr(bundle.classifier, "classes_", [0, 1]))
             storm_probability = float(probabilities[classes.index(1)] if 1 in classes else 0.0)
             tier = self.tier_from_amplitude(amplitude)
-            confidence = float(max(0.0, min(1.0, abs(storm_probability - 0.5) * 2.0 * quality)))
+            classifier_confidence = abs(storm_probability - 0.5) * 2.0
+            model_delta = amplitude - baseline
+            blend_disagreement = abs(raw - baseline) / max(1.0, baseline)
+            confidence = classifier_confidence * quality * (1.0 - min(0.5, blend_disagreement) * 0.5)
+            confidence = float(max(0.0, min(1.0, confidence)))
             results[int(horizon)] = {
                 "horizon_hours": int(horizon),
                 "predicted_amplitude_nt": amplitude,
+                "persistence_amplitude_nt": baseline,
+                "model_delta_nt": float(model_delta),
                 "storm_probability": storm_probability,
                 "predicted_tier": tier,
                 "confidence": confidence,
-                "data_quality": float(quality),
-                "blend_weight": float(self.blend_weights.get(horizon, 1.0)),
+                "data_quality": quality,
+                "blend_weight": weight,
+                "model_persistence_disagreement": float(blend_disagreement),
             }
         return results
 
@@ -298,9 +332,20 @@ class GeomagneticForecaster:
             return "unsettled"
         return "quiet"
 
+    def health_check(self) -> dict[str, Any]:
+        """Return deployment-facing artifact health information."""
+        return {
+            "fitted": bool(self.fitted),
+            "schema_version": int(self.training_metadata.get("schema_version", 0)),
+            "horizons_hours": list(self.config.horizons_hours),
+            "feature_count": len(self.feature_columns),
+            "production_gate": self.training_metadata.get("production_gate", "unknown"),
+            "model_type": self.training_metadata.get("model_type", "unknown"),
+        }
+
 
 def save_model(model: GeomagneticForecaster, path: str | Path) -> Path:
-    """Atomically serialize a fitted forecaster."""
+    """Atomically serialize a fitted production candidate."""
     if not model.fitted:
         raise ValueError("cannot save an unfitted forecaster")
     destination = Path(path)
@@ -318,8 +363,10 @@ def load_model(path: str | Path) -> GeomagneticForecaster:
         model = pickle.load(handle)
     if not isinstance(model, GeomagneticForecaster) or not model.fitted:
         raise ValueError("invalid or unfitted geomagnetic forecaster artifact")
-    if model.training_metadata.get("schema_version", 1) < 2:
+    if model.training_metadata.get("schema_version", 0) < 3:
         raise ValueError("legacy forecast artifact requires retraining")
+    if model.training_metadata.get("production_gate") != "passed":
+        raise ValueError("forecast artifact is not production-approved")
     return model
 
 
@@ -331,7 +378,7 @@ def build_training_data(
     cadence_s: float = 60.0,
     config: ForecastConfig = ForecastConfig(),
 ) -> tuple[pd.DataFrame, dict[int, pd.Series]]:
-    """Build causal features and future targets."""
+    """Build causal features and strictly-future targets."""
     feature_config = FeatureConfig(
         cadence_s=cadence_s,
         lookback_hours=config.lookback_hours,
@@ -348,4 +395,11 @@ def build_training_data(
     return features, targets
 
 
-__all__ = ["ForecastConfig", "ForecastEvaluation", "GeomagneticForecaster", "build_training_data", "save_model", "load_model"]
+__all__ = [
+    "ForecastConfig",
+    "ForecastEvaluation",
+    "GeomagneticForecaster",
+    "build_training_data",
+    "save_model",
+    "load_model",
+]
