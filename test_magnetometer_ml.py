@@ -19,9 +19,7 @@ from models.forecaster import (
 
 class FeatureTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.index = pd.date_range(
-            "2024-05-08", periods=1000, freq="min", tz="UTC"
-        )
+        self.index = pd.date_range("2024-05-08", periods=1000, freq="min", tz="UTC")
         t = np.arange(len(self.index))
         self.residual = pd.Series(
             8.0 * np.sin(2 * np.pi * t / 1440.0) + (t % 180) * 0.03,
@@ -33,10 +31,7 @@ class FeatureTests(unittest.TestCase):
             self.residual,
             pd.Series(2.0, index=self.index),
             pd.Series(-5.0, index=self.index),
-            config=FeatureConfig(
-                windows_min=(15, 60, 180),
-                lookback_hours=3,
-            ),
+            config=FeatureConfig(windows_min=(15, 60, 180), lookback_hours=3),
         )
         for column in (
             "residual_std_15m",
@@ -63,61 +58,30 @@ class FeatureTests(unittest.TestCase):
         pd.testing.assert_frame_equal(original.iloc[:-1], changed_frame.iloc[:-1])
 
     def test_future_target_starts_after_horizon(self) -> None:
-        targets = build_targets(
-            self.residual,
-            horizons_hours=(1,),
-            amplitude_window_min=30,
-        )
+        targets = build_targets(self.residual, horizons_hours=(1,), amplitude_window_min=30)
         changed = self.residual.copy()
         changed.iloc[30] += 10000.0
-        changed_targets = build_targets(
-            changed,
-            horizons_hours=(1,),
-            amplitude_window_min=30,
-        )
-        self.assertAlmostEqual(
-            float(targets[1].iloc[0]),
-            float(changed_targets[1].iloc[0]),
-        )
+        changed_targets = build_targets(changed, horizons_hours=(1,), amplitude_window_min=30)
+        self.assertAlmostEqual(float(targets[1].iloc[0]), float(changed_targets[1].iloc[0]))
 
     def test_future_target_window_is_strictly_after_horizon(self) -> None:
-        targets = build_targets(
-            self.residual,
-            horizons_hours=(1,),
-            amplitude_window_min=30,
-        )
+        targets = build_targets(self.residual, horizons_hours=(1,), amplitude_window_min=30)
         changed = self.residual.copy()
         changed.iloc[59] += 10000.0
-        changed_targets = build_targets(
-            changed,
-            horizons_hours=(1,),
-            amplitude_window_min=30,
-        )
-        self.assertAlmostEqual(
-            float(targets[1].iloc[0]),
-            float(changed_targets[1].iloc[0]),
-        )
+        changed_targets = build_targets(changed, horizons_hours=(1,), amplitude_window_min=30)
+        self.assertAlmostEqual(float(targets[1].iloc[0]), float(changed_targets[1].iloc[0]))
 
 
 class ForecasterTests(unittest.TestCase):
     def _dataset(self) -> tuple[pd.DataFrame, dict[int, pd.Series]]:
-        index = pd.date_range(
-            "2024-05-08", periods=3000, freq="min", tz="UTC"
-        )
+        index = pd.date_range("2024-05-08", periods=3000, freq="min", tz="UTC")
         t = np.arange(len(index), dtype=float)
-        residual = pd.Series(
-            8.0 * np.sin(2 * np.pi * t / 1440.0), index=index
-        )
+        residual = pd.Series(8.0 * np.sin(2 * np.pi * t / 1440.0), index=index)
         for start in (800, 1700, 2450):
-            residual.iloc[start : start + 100] += (
-                np.sin(np.linspace(0, 8 * np.pi, 100)) * 120
-            )
+            residual.iloc[start : start + 100] += np.sin(np.linspace(0, 8 * np.pi, 100)) * 120
         kp = pd.Series(2.0, index=index)
         dst = pd.Series(-5.0, index=index)
-        cfg = self._config()
-        return build_training_data(
-            residual, kp, dst, cadence_s=60.0, config=cfg
-        )
+        return build_training_data(residual, kp, dst, cadence_s=60.0, config=self._config())
 
     def test_fit_predict_evaluate_and_serialization(self) -> None:
         features, targets = self._dataset()
@@ -145,7 +109,7 @@ class ForecasterTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = save_model(model, f"{tmp}/model.pkl")
-            restored = load_model(path)
+            restored = load_model(path, require_production=False)
             self.assertEqual(restored.feature_columns, model.feature_columns)
             self.assertEqual(restored.predict(test.tail(1)), predictions)
 
