@@ -1,0 +1,1038 @@
+{
+  "mode": "causal_live_replay",
+  "observatory": "VIC",
+  "window": {
+    "start": "2024-01-01T00:00:00+00:00",
+    "end": "2025-01-01T00:00:00+00:00"
+  },
+  "config": "calibrated_vic.json",
+  "samples": {
+    "expected": 527040,
+    "unique_truth_samples": 527040,
+    "evaluated_by_detector": 524955,
+    "warming_up": 62,
+    "invalid": 2023,
+    "errors": 0,
+    "gaps": 0,
+    "duplicate_samples": 0,
+    "missing_expected_samples": 0,
+    "global_truth_samples": 527040,
+    "truth_coverage": 1.0
+  },
+  "sample_metrics": {
+    "tp": 7361,
+    "fp": 4967,
+    "fn": 2719,
+    "tn": 509908,
+    "detection_rate": 0.7302579365079365,
+    "precision": 0.5970960415314731,
+    "recall": 0.7302579365079365,
+    "f1": 0.6569975008925384,
+    "false_alarm_rate": 0.009647001699441613,
+    "missed_event_rate": 0.2697420634920635
+  },
+  "events": {
+    "truth_events": 22,
+    "truth_events_detected": 16,
+    "truth_event_detection_rate": 0.7272727272727273,
+    "live_event_starts": 69,
+    "live_event_escalations": 30,
+    "live_event_ends": 69,
+    "matched_onset_delta_min_median": 105.0,
+    "matched_onset_delta_min_p95": 181.75,
+    "early_warning_lead_min_median": 21.0,
+    "detector_event_intervals": [
+      {
+        "event_id": "b2eb3d29f25042c09e34cdb9401facc1",
+        "start": "2024-01-01 01:49:00+00:00",
+        "end": "2024-01-01 06:10:00+00:00",
+        "level": "major_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "e8482bff914041b796232fc366553047",
+        "start": "2024-03-03 15:24:00+00:00",
+        "end": "2024-03-03 15:54:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "b00df8e2f22c40f49212de9b7e641897",
+        "start": "2024-03-03 15:55:00+00:00",
+        "end": "2024-03-03 16:25:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "04bcbc97ed3144369a6724198cd5f6ed",
+        "start": "2024-03-21 14:02:00+00:00",
+        "end": "2024-03-21 14:32:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "345c78357da04831895ae4286d7b7a66",
+        "start": "2024-03-21 14:41:00+00:00",
+        "end": "2024-03-21 15:11:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "176d028c77104aac8b425bdd6d2e68c3",
+        "start": "2024-03-21 15:12:00+00:00",
+        "end": "2024-03-21 15:42:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "cb54d802833d4ffab3f7bc1089486ad4",
+        "start": "2024-03-21 16:07:00+00:00",
+        "end": "2024-03-21 19:21:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "01872b4156634d639d5d4a5d9943a0fc",
+        "start": "2024-03-24 15:19:00+00:00",
+        "end": "2024-03-24 22:40:00+00:00",
+        "level": "major_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "ddeee9e65496428daf2b21c60f947f03",
+        "start": "2024-03-25 14:38:00+00:00",
+        "end": "2024-03-25 15:08:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "f799df3c94d54e9b8b6f895069fe4ea2",
+        "start": "2024-03-25 15:09:00+00:00",
+        "end": "2024-03-25 19:13:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "065aa7084f5a4b74a7f30f1688f1d83c",
+        "start": "2024-04-19 16:34:00+00:00",
+        "end": "2024-04-19 17:04:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "32bcb1997e004ac88f0f2e59c2c8df90",
+        "start": "2024-04-19 17:08:00+00:00",
+        "end": "2024-04-19 17:38:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "1737cee687614e5782e9bf52568eeaaf",
+        "start": "2024-04-19 19:52:00+00:00",
+        "end": "2024-04-20 00:41:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "684a5d1cdea04c66bf50d7fa63e31ae8",
+        "start": "2024-05-02 15:04:00+00:00",
+        "end": "2024-05-03 03:04:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "2c1c4af9327b499da895fd2c5241b878",
+        "start": "2024-05-03 14:54:00+00:00",
+        "end": "2024-05-03 15:24:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "9ebae3831db4495ab83133404be9c75b",
+        "start": "2024-05-06 00:10:00+00:00",
+        "end": "2024-05-06 00:40:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "4f420bd9e1d54bb3890745fea8897879",
+        "start": "2024-05-06 01:15:00+00:00",
+        "end": "2024-05-06 03:13:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "0b863f4a709b4aae926bd3b68e23a2b6",
+        "start": "2024-05-10 17:09:00+00:00",
+        "end": "2024-05-11 05:09:00+00:00",
+        "level": "severe_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "45f58a68a7e448d58ccc81c83a260cba",
+        "start": "2024-05-11 05:10:00+00:00",
+        "end": "2024-05-11 17:10:00+00:00",
+        "level": "severe_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "917bef41a88240e388d992d44d3cb853",
+        "start": "2024-05-11 17:11:00+00:00",
+        "end": "2024-05-12 05:11:00+00:00",
+        "level": "major_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "64757823c7aa4290bd2fea1e00873167",
+        "start": "2024-05-12 05:12:00+00:00",
+        "end": "2024-05-12 10:12:00+00:00",
+        "level": "major_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "dbebdd7a344341c9bc60488ac8423120",
+        "start": "2024-05-12 22:26:00+00:00",
+        "end": "2024-05-13 09:45:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "c0adddb1ca1f4690a23bb1c20ab37cd8",
+        "start": "2024-05-16 08:36:00+00:00",
+        "end": "2024-05-16 15:05:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "596f630194d84d31922d29dff0f613f3",
+        "start": "2024-05-17 08:34:00+00:00",
+        "end": "2024-05-17 09:04:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "e6e412f000a04bde899fe4feb652047b",
+        "start": "2024-05-17 09:05:00+00:00",
+        "end": "2024-05-17 09:35:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "4b90fe16613c42eeb55778a3c1311cf2",
+        "start": "2024-05-17 23:57:00+00:00",
+        "end": "2024-05-18 01:24:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "3ebf55eaf8504641ab774cbc57e275f1",
+        "start": "2024-06-08 01:55:00+00:00",
+        "end": "2024-06-08 05:19:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "fefb44b8365c4f9bae1abea253489fa4",
+        "start": "2024-06-28 05:54:00+00:00",
+        "end": "2024-06-28 06:24:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "0dc0e726f5494c1aac832520b7e11b97",
+        "start": "2024-06-28 11:15:00+00:00",
+        "end": "2024-06-28 19:58:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "f73bd780230344b885207d859569ceee",
+        "start": "2024-06-29 11:11:00+00:00",
+        "end": "2024-06-29 16:10:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "189db527790b495589e50a8e759e8341",
+        "start": "2024-08-01 01:57:00+00:00",
+        "end": "2024-08-01 02:27:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "356a819a5df549eca25c6c550197b1e9",
+        "start": "2024-08-04 10:36:00+00:00",
+        "end": "2024-08-04 19:40:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "ebdcdfaeccc54a27af392c2f4b17bc55",
+        "start": "2024-08-05 12:37:00+00:00",
+        "end": "2024-08-05 18:10:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "97b7772c52534074a727a6a79c10154a",
+        "start": "2024-08-11 23:54:00+00:00",
+        "end": "2024-08-12 11:54:00+00:00",
+        "level": "major_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "ac0457a4b3624867b52d5169af979b7d",
+        "start": "2024-08-12 11:55:00+00:00",
+        "end": "2024-08-12 23:55:00+00:00",
+        "level": "major_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "dd7131a2466a4905b124343498e2153b",
+        "start": "2024-08-12 23:56:00+00:00",
+        "end": "2024-08-13 11:56:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "962f90c8099a4a67b20008fc7902f7b5",
+        "start": "2024-08-13 11:57:00+00:00",
+        "end": "2024-08-13 23:57:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "9c76b1ba703b40cba7d9f05649df146d",
+        "start": "2024-08-17 17:31:00+00:00",
+        "end": "2024-08-17 19:59:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "5be2544d1c46499b9c4554a15945843b",
+        "start": "2024-08-28 06:40:00+00:00",
+        "end": "2024-08-28 12:59:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "8b1c7253f392456a938b17e3526e2aaf",
+        "start": "2024-09-01 01:23:00+00:00",
+        "end": "2024-09-01 02:44:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "f89130e2019841ef8ad442a1f683545c",
+        "start": "2024-09-12 08:39:00+00:00",
+        "end": "2024-09-12 20:39:00+00:00",
+        "level": "major_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "929ef6bac01a479c955fa6f3c6783e4a",
+        "start": "2024-09-12 20:40:00+00:00",
+        "end": "2024-09-12 22:26:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "fba59d5ece914934a12da88cc0d1fd13",
+        "start": "2024-09-13 02:29:00+00:00",
+        "end": "2024-09-13 02:59:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "ef93692d170f412ea6d91da7ba75657b",
+        "start": "2024-09-13 13:05:00+00:00",
+        "end": "2024-09-13 16:23:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "6d94c9e2a0134e71961328545ada496a",
+        "start": "2024-09-13 22:43:00+00:00",
+        "end": "2024-09-14 01:39:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "1fde61492edc43459709600538d7c524",
+        "start": "2024-09-16 10:00:00+00:00",
+        "end": "2024-09-16 14:23:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "9a39fdec364e40c796b2db089abe5011",
+        "start": "2024-09-17 01:22:00+00:00",
+        "end": "2024-09-17 13:22:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "01f72508a1ec409aa288df2a6e6f57e7",
+        "start": "2024-09-17 13:23:00+00:00",
+        "end": "2024-09-17 17:49:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "63624d5073994a70ade1a6d800c57d23",
+        "start": "2024-09-18 07:40:00+00:00",
+        "end": "2024-09-18 08:10:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "f1d5255207be498c8b0721d054768ff1",
+        "start": "2024-09-18 08:11:00+00:00",
+        "end": "2024-09-18 13:53:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "6d7b04a0d7274925bafd76f53f486c40",
+        "start": "2024-09-19 12:28:00+00:00",
+        "end": "2024-09-19 12:58:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "de47ccb2e831438685d1529d3fbdd939",
+        "start": "2024-09-19 14:06:00+00:00",
+        "end": "2024-09-19 14:36:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "6292597d0e6b42a285cc262185edaa8a",
+        "start": "2024-09-25 07:27:00+00:00",
+        "end": "2024-09-25 11:08:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "1cd7100a3018444ba5adcbebb97a3a33",
+        "start": "2024-10-07 11:35:00+00:00",
+        "end": "2024-10-07 15:30:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "b4eae96cf7594766a1698c997637f0aa",
+        "start": "2024-10-07 18:08:00+00:00",
+        "end": "2024-10-07 18:38:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "936ebc0defd2453885f9388129854920",
+        "start": "2024-10-07 18:39:00+00:00",
+        "end": "2024-10-07 19:09:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "481d58a3fa194a6baecec15be506a217",
+        "start": "2024-10-07 19:10:00+00:00",
+        "end": "2024-10-07 19:40:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "cab6e696b4d446bc997d030222993538",
+        "start": "2024-10-07 19:47:00+00:00",
+        "end": "2024-10-08 07:47:00+00:00",
+        "level": "major_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "a7c433ed707741349a09f257d92b3c6e",
+        "start": "2024-10-08 07:48:00+00:00",
+        "end": "2024-10-08 16:36:00+00:00",
+        "level": "major_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "ee031e9d161a4134886a1e1b95d1ff80",
+        "start": "2024-10-09 02:03:00+00:00",
+        "end": "2024-10-09 02:33:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "ed7c9521a53b46808d805cd5a9c98b10",
+        "start": "2024-10-09 02:34:00+00:00",
+        "end": "2024-10-09 10:09:00+00:00",
+        "level": "minor_storm",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "33ba69f124ea471eb2a9c8936395a7d0",
+        "start": "2024-10-10 15:40:00+00:00",
+        "end": "2024-10-11 03:40:00+00:00",
+        "level": "major_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "677a0efee79e4bf48dfa9e5ee6a017e5",
+        "start": "2024-10-11 03:41:00+00:00",
+        "end": "2024-10-11 15:41:00+00:00",
+        "level": "major_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "ec7c50d2bff94c458f81668299e07444",
+        "start": "2024-10-11 15:42:00+00:00",
+        "end": "2024-10-12 02:39:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "3a068bcce1d447c3b6077d49aa95e704",
+        "start": "2024-10-12 11:27:00+00:00",
+        "end": "2024-10-12 16:15:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      },
+      {
+        "event_id": "ada9147fbd4844b299eef5b09b6e3123",
+        "start": "2024-11-09 11:56:00+00:00",
+        "end": "2024-11-09 12:26:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "c22f66c60f7949438fce4207f18309e3",
+        "start": "2024-11-09 12:27:00+00:00",
+        "end": "2024-11-09 12:57:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "b3b276ed2c194797a399d30a24bfe7f3",
+        "start": "2024-11-09 12:58:00+00:00",
+        "end": "2024-11-09 13:28:00+00:00",
+        "level": "candidate",
+        "trigger": "fast"
+      },
+      {
+        "event_id": "9e68c587809240f1909942eee8e39822",
+        "start": "2024-11-09 14:09:00+00:00",
+        "end": "2024-11-09 17:09:00+00:00",
+        "level": "minor_storm",
+        "trigger": "storm"
+      }
+    ],
+    "event_diagnostics": [
+      {
+        "truth_event": 1,
+        "status": "missed",
+        "truth_start": "2024-03-03T18:00:00+00:00",
+        "truth_end": "2024-03-03T20:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 0,
+        "peak_amplitude_nt": 71.1881857097178,
+        "peak_fast_amplitude_nt": 24.884167046679067,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "detector never classified a storm during the reference interval"
+      },
+      {
+        "truth_event": 2,
+        "status": "detected",
+        "truth_start": "2024-03-24T12:00:00+00:00",
+        "truth_end": "2024-03-24T20:59:00+00:00",
+        "duration_min": 540.0,
+        "storm_classified_minutes": 331,
+        "peak_amplitude_nt": 506.92967553863855,
+        "peak_fast_amplitude_nt": 167.0819895931927,
+        "detector_event_id": "01872b4156634d639d5d4a5d9943a0fc",
+        "detector_start": "2024-03-24T15:19:00+00:00",
+        "detector_end": "2024-03-24T22:40:00+00:00",
+        "onset_delta_min": 199.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "storm",
+        "detector_level": "major_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 3,
+        "status": "detected",
+        "truth_start": "2024-04-19T18:00:00+00:00",
+        "truth_end": "2024-04-19T20:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 14,
+        "peak_amplitude_nt": 96.20772527193185,
+        "peak_fast_amplitude_nt": 41.30493999821192,
+        "detector_event_id": "1737cee687614e5782e9bf52568eeaaf",
+        "detector_start": "2024-04-19T19:52:00+00:00",
+        "detector_end": "2024-04-20T00:41:00+00:00",
+        "onset_delta_min": 112.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "storm",
+        "detector_level": "minor_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 4,
+        "status": "detected",
+        "truth_start": "2024-05-02T15:00:00+00:00",
+        "truth_end": "2024-05-02T20:59:00+00:00",
+        "duration_min": 360.0,
+        "storm_classified_minutes": 274,
+        "peak_amplitude_nt": 140.42406425859372,
+        "peak_fast_amplitude_nt": 51.317765805382805,
+        "detector_event_id": "684a5d1cdea04c66bf50d7fa63e31ae8",
+        "detector_start": "2024-05-02T15:04:00+00:00",
+        "detector_end": "2024-05-03T03:04:00+00:00",
+        "onset_delta_min": 4.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "fast",
+        "detector_level": "minor_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 5,
+        "status": "detected",
+        "truth_start": "2024-05-10T15:00:00+00:00",
+        "truth_end": "2024-05-12T05:59:00+00:00",
+        "duration_min": 2340.0,
+        "storm_classified_minutes": 2078,
+        "peak_amplitude_nt": 1386.5767852582067,
+        "peak_fast_amplitude_nt": 870.6307951681592,
+        "detector_event_id": "0b863f4a709b4aae926bd3b68e23a2b6",
+        "detector_start": "2024-05-10T17:09:00+00:00",
+        "detector_end": "2024-05-11T05:09:00+00:00",
+        "onset_delta_min": 129.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "fast",
+        "detector_level": "severe_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 6,
+        "status": "detected",
+        "truth_start": "2024-05-12T21:00:00+00:00",
+        "truth_end": "2024-05-12T23:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 96,
+        "peak_amplitude_nt": 100.26510868007608,
+        "peak_fast_amplitude_nt": 63.68350726481003,
+        "detector_event_id": "dbebdd7a344341c9bc60488ac8423120",
+        "detector_start": "2024-05-12T22:26:00+00:00",
+        "detector_end": "2024-05-13T09:45:00+00:00",
+        "onset_delta_min": 86.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "storm",
+        "detector_level": "minor_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 7,
+        "status": "missed",
+        "truth_start": "2024-05-13T03:00:00+00:00",
+        "truth_end": "2024-05-13T05:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 136,
+        "peak_amplitude_nt": 121.9655175656444,
+        "peak_fast_amplitude_nt": 72.7590546089632,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "no live event interval overlapped the reference storm"
+      },
+      {
+        "truth_event": 8,
+        "status": "detected",
+        "truth_start": "2024-05-16T06:00:00+00:00",
+        "truth_end": "2024-05-16T08:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 22,
+        "peak_amplitude_nt": 117.65907530637196,
+        "peak_fast_amplitude_nt": 40.02492206660827,
+        "detector_event_id": "c0adddb1ca1f4690a23bb1c20ab37cd8",
+        "detector_start": "2024-05-16T08:36:00+00:00",
+        "detector_end": "2024-05-16T15:05:00+00:00",
+        "onset_delta_min": 156.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "fast",
+        "detector_level": "minor_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 9,
+        "status": "missed",
+        "truth_start": "2024-05-17T18:00:00+00:00",
+        "truth_end": "2024-05-17T20:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 0,
+        "peak_amplitude_nt": 58.79193736133311,
+        "peak_fast_amplitude_nt": 24.796893889302737,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "detector never classified a storm during the reference interval"
+      },
+      {
+        "truth_event": 10,
+        "status": "missed",
+        "truth_start": "2024-06-07T12:00:00+00:00",
+        "truth_end": "2024-06-07T14:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 0,
+        "peak_amplitude_nt": 44.62120409061754,
+        "peak_fast_amplitude_nt": 15.837301799336274,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "detector never classified a storm during the reference interval"
+      },
+      {
+        "truth_event": 11,
+        "status": "detected",
+        "truth_start": "2024-06-28T09:00:00+00:00",
+        "truth_end": "2024-06-28T14:59:00+00:00",
+        "duration_min": 360.0,
+        "storm_classified_minutes": 222,
+        "peak_amplitude_nt": 242.7285391974583,
+        "peak_fast_amplitude_nt": 122.71151582420862,
+        "detector_event_id": "0dc0e726f5494c1aac832520b7e11b97",
+        "detector_start": "2024-06-28T11:15:00+00:00",
+        "detector_end": "2024-06-28T19:58:00+00:00",
+        "onset_delta_min": 135.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "fast",
+        "detector_level": "minor_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 12,
+        "status": "detected",
+        "truth_start": "2024-08-04T12:00:00+00:00",
+        "truth_end": "2024-08-04T17:59:00+00:00",
+        "duration_min": 360.0,
+        "storm_classified_minutes": 282,
+        "peak_amplitude_nt": 210.3769577602725,
+        "peak_fast_amplitude_nt": 86.9439810870972,
+        "detector_event_id": "356a819a5df549eca25c6c550197b1e9",
+        "detector_start": "2024-08-04T10:36:00+00:00",
+        "detector_end": "2024-08-04T19:40:00+00:00",
+        "onset_delta_min": -84.0,
+        "early_warning_lead_min": 84.0,
+        "detector_trigger": "fast",
+        "detector_level": "minor_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 13,
+        "status": "detected",
+        "truth_start": "2024-08-12T00:00:00+00:00",
+        "truth_end": "2024-08-12T17:59:00+00:00",
+        "duration_min": 1080.0,
+        "storm_classified_minutes": 1060,
+        "peak_amplitude_nt": 508.7138285387555,
+        "peak_fast_amplitude_nt": 207.07306164543843,
+        "detector_event_id": "97b7772c52534074a727a6a79c10154a",
+        "detector_start": "2024-08-11T23:54:00+00:00",
+        "detector_end": "2024-08-12T11:54:00+00:00",
+        "onset_delta_min": -6.0,
+        "early_warning_lead_min": 6.0,
+        "detector_trigger": "storm",
+        "detector_level": "major_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 14,
+        "status": "detected",
+        "truth_start": "2024-08-12T21:00:00+00:00",
+        "truth_end": "2024-08-12T23:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 107,
+        "peak_amplitude_nt": 128.0288587769537,
+        "peak_fast_amplitude_nt": 31.43842065847275,
+        "detector_event_id": "dd7131a2466a4905b124343498e2153b",
+        "detector_start": "2024-08-12T23:56:00+00:00",
+        "detector_end": "2024-08-13T11:56:00+00:00",
+        "onset_delta_min": 176.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "storm",
+        "detector_level": "minor_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 15,
+        "status": "detected",
+        "truth_start": "2024-08-17T15:00:00+00:00",
+        "truth_end": "2024-08-17T17:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 31,
+        "peak_amplitude_nt": 90.65840935429878,
+        "peak_fast_amplitude_nt": 67.13215541698446,
+        "detector_event_id": "9c76b1ba703b40cba7d9f05649df146d",
+        "detector_start": "2024-08-17T17:31:00+00:00",
+        "detector_end": "2024-08-17T19:59:00+00:00",
+        "onset_delta_min": 151.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "storm",
+        "detector_level": "minor_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 16,
+        "status": "detected",
+        "truth_start": "2024-09-12T09:00:00+00:00",
+        "truth_end": "2024-09-12T20:59:00+00:00",
+        "duration_min": 720.0,
+        "storm_classified_minutes": 594,
+        "peak_amplitude_nt": 562.4389045294156,
+        "peak_fast_amplitude_nt": 291.7754241312505,
+        "detector_event_id": "f89130e2019841ef8ad442a1f683545c",
+        "detector_start": "2024-09-12T08:39:00+00:00",
+        "detector_end": "2024-09-12T20:39:00+00:00",
+        "onset_delta_min": -21.0,
+        "early_warning_lead_min": 21.0,
+        "detector_trigger": "fast",
+        "detector_level": "major_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 17,
+        "status": "detected",
+        "truth_start": "2024-09-13T21:00:00+00:00",
+        "truth_end": "2024-09-13T23:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 3,
+        "peak_amplitude_nt": 84.64448879347037,
+        "peak_fast_amplitude_nt": 27.69529917759064,
+        "detector_event_id": "6d94c9e2a0134e71961328545ada496a",
+        "detector_start": "2024-09-13T22:43:00+00:00",
+        "detector_end": "2024-09-14T01:39:00+00:00",
+        "onset_delta_min": 103.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "storm",
+        "detector_level": "minor_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 18,
+        "status": "detected",
+        "truth_start": "2024-09-17T00:00:00+00:00",
+        "truth_end": "2024-09-17T05:59:00+00:00",
+        "duration_min": 360.0,
+        "storm_classified_minutes": 266,
+        "peak_amplitude_nt": 238.42477766643424,
+        "peak_fast_amplitude_nt": 162.8378838778226,
+        "detector_event_id": "9a39fdec364e40c796b2db089abe5011",
+        "detector_start": "2024-09-17T01:22:00+00:00",
+        "detector_end": "2024-09-17T13:22:00+00:00",
+        "onset_delta_min": 82.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "fast",
+        "detector_level": "minor_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 19,
+        "status": "missed",
+        "truth_start": "2024-09-17T09:00:00+00:00",
+        "truth_end": "2024-09-17T11:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 172,
+        "peak_amplitude_nt": 241.1905801524117,
+        "peak_fast_amplitude_nt": 112.31535927495133,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "no live event interval overlapped the reference storm"
+      },
+      {
+        "truth_event": 20,
+        "status": "detected",
+        "truth_start": "2024-10-07T18:00:00+00:00",
+        "truth_end": "2024-10-07T20:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 75,
+        "peak_amplitude_nt": 113.01493883625517,
+        "peak_fast_amplitude_nt": 70.08296886684548,
+        "detector_event_id": "cab6e696b4d446bc997d030222993538",
+        "detector_start": "2024-10-07T19:47:00+00:00",
+        "detector_end": "2024-10-08T07:47:00+00:00",
+        "onset_delta_min": 107.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "storm",
+        "detector_level": "major_storm",
+        "reason": "overlapping live event"
+      },
+      {
+        "truth_event": 21,
+        "status": "missed",
+        "truth_start": "2024-10-08T00:00:00+00:00",
+        "truth_end": "2024-10-08T05:59:00+00:00",
+        "duration_min": 360.0,
+        "storm_classified_minutes": 196,
+        "peak_amplitude_nt": 472.49236244719214,
+        "peak_fast_amplitude_nt": 271.11772704452596,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "no live event interval overlapped the reference storm"
+      },
+      {
+        "truth_event": 22,
+        "status": "detected",
+        "truth_start": "2024-10-10T15:00:00+00:00",
+        "truth_end": "2024-10-11T14:59:00+00:00",
+        "duration_min": 1440.0,
+        "storm_classified_minutes": 1402,
+        "peak_amplitude_nt": 626.9374943505245,
+        "peak_fast_amplitude_nt": 394.1930145560109,
+        "detector_event_id": "33ba69f124ea471eb2a9c8936395a7d0",
+        "detector_start": "2024-10-10T15:40:00+00:00",
+        "detector_end": "2024-10-11T03:40:00+00:00",
+        "onset_delta_min": 40.0,
+        "early_warning_lead_min": null,
+        "detector_trigger": "storm",
+        "detector_level": "major_storm",
+        "reason": "overlapping live event"
+      }
+    ],
+    "missed_events": [
+      {
+        "truth_event": 1,
+        "status": "missed",
+        "truth_start": "2024-03-03T18:00:00+00:00",
+        "truth_end": "2024-03-03T20:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 0,
+        "peak_amplitude_nt": 71.1881857097178,
+        "peak_fast_amplitude_nt": 24.884167046679067,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "detector never classified a storm during the reference interval"
+      },
+      {
+        "truth_event": 7,
+        "status": "missed",
+        "truth_start": "2024-05-13T03:00:00+00:00",
+        "truth_end": "2024-05-13T05:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 136,
+        "peak_amplitude_nt": 121.9655175656444,
+        "peak_fast_amplitude_nt": 72.7590546089632,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "no live event interval overlapped the reference storm"
+      },
+      {
+        "truth_event": 9,
+        "status": "missed",
+        "truth_start": "2024-05-17T18:00:00+00:00",
+        "truth_end": "2024-05-17T20:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 0,
+        "peak_amplitude_nt": 58.79193736133311,
+        "peak_fast_amplitude_nt": 24.796893889302737,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "detector never classified a storm during the reference interval"
+      },
+      {
+        "truth_event": 10,
+        "status": "missed",
+        "truth_start": "2024-06-07T12:00:00+00:00",
+        "truth_end": "2024-06-07T14:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 0,
+        "peak_amplitude_nt": 44.62120409061754,
+        "peak_fast_amplitude_nt": 15.837301799336274,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "detector never classified a storm during the reference interval"
+      },
+      {
+        "truth_event": 19,
+        "status": "missed",
+        "truth_start": "2024-09-17T09:00:00+00:00",
+        "truth_end": "2024-09-17T11:59:00+00:00",
+        "duration_min": 180.0,
+        "storm_classified_minutes": 172,
+        "peak_amplitude_nt": 241.1905801524117,
+        "peak_fast_amplitude_nt": 112.31535927495133,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "no live event interval overlapped the reference storm"
+      },
+      {
+        "truth_event": 21,
+        "status": "missed",
+        "truth_start": "2024-10-08T00:00:00+00:00",
+        "truth_end": "2024-10-08T05:59:00+00:00",
+        "duration_min": 360.0,
+        "storm_classified_minutes": 196,
+        "peak_amplitude_nt": 472.49236244719214,
+        "peak_fast_amplitude_nt": 271.11772704452596,
+        "detector_event_id": null,
+        "detector_start": null,
+        "detector_end": null,
+        "onset_delta_min": null,
+        "early_warning_lead_min": null,
+        "detector_trigger": null,
+        "detector_level": null,
+        "reason": "no live event interval overlapped the reference storm"
+      }
+    ]
+  }
+}

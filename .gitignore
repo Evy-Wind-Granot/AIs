@@ -3,6 +3,12 @@ venv_moirai/
 *.jsonl
 weather_merged_results.json
 
+# Generated caches and Python bytecode.
+.magnetometer_cache/
+**/__pycache__/
+*.pyc
+*.pyo
+
 # Generated geomagnetic ML artifacts and temporary model files.
-models/artifacts/
+magnetometer/models/artifacts/
 *.pkl.tmp
