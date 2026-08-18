@@ -159,7 +159,7 @@ EQTransformer total unique picks: 11
   EQTransformer P=6, S=5
      P  2024-01-01T09:04:11.659538Z  prob=0.719  (EQTransformer)
      P  2024-01-01T09:08:40.179537Z  prob=0.742  (EQTransformer)
-     P  2024-01-01T09:14:38.089537Z  prob=0.765  (EQTransformer)
+     P  2024-01-01T09:14:38.089538Z  prob=0.765  (EQTransformer)
      S  2024-01-01T09:26:06.319538Z  prob=0.752  (EQTransformer)
      S  2024-01-01T09:28:43.689537Z  prob=0.719  (EQTransformer)
      ... (1 more)
