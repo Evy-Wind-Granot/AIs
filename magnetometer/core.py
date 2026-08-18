@@ -78,7 +78,7 @@ def _attach_ml_forecast(result: Dict[str, Any], *, cadence_s: float, observatory
 
         model = load_model(artifact)
         health = model.health_check()
-        approved = {int(h) for h in health.get("approved_horizons_hours", [])}
+        approved = {int(h) for h in model.training_metadata.get("approved_horizons_hours", [])}
         if not approved:
             raise RuntimeError("forecast artifact has no production-approved horizons")
 
