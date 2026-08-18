@@ -49,6 +49,10 @@ class FeatureTests(unittest.TestCase):
         ):
             self.assertIn(column, frame)
         self.assertTrue(frame.index.equals(self.index))
+        self.assertTrue(pd.isna(frame["kp"].iloc[0]))
+        self.assertTrue(pd.isna(frame["dst"].iloc[0]))
+        self.assertAlmostEqual(float(frame["kp"].iloc[180]), 2.0)
+        self.assertAlmostEqual(float(frame["dst"].iloc[60]), -5.0)
 
     def test_feature_values_are_causal(self) -> None:
         cfg = FeatureConfig(windows_min=(15, 60), lookback_hours=1)
