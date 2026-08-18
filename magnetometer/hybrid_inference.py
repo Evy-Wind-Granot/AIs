@@ -11,6 +11,18 @@ import pandas as pd
 from models.forecaster import ForecastResult, GeomagneticForecaster
 
 
+def _normalize_index_series(series: pd.Series | None) -> pd.Series | None:
+    """Return a UTC-indexed numeric Series, or None when no usable data exists."""
+    if series is None or series.empty:
+        return None
+    result = pd.to_numeric(series, errors="coerce").dropna().copy()
+    if result.empty:
+        return None
+    result.index = pd.to_datetime(result.index, utc=True)
+    result = result[~result.index.duplicated(keep="last")].sort_index()
+    return result.astype(float)
+
+
 def build_aligned_forecast_frame(
     residual: np.ndarray,
     index: pd.DatetimeIndex,
@@ -21,17 +33,20 @@ def build_aligned_forecast_frame(
     """Build the causal ML input frame from deterministic residual output."""
     if len(residual) != len(index):
         raise ValueError("residual and index must have equal length")
+    if not isinstance(index, pd.DatetimeIndex) or index.tz is None:
+        raise ValueError("index must be a timezone-aware pandas DatetimeIndex")
+    if not index.is_monotonic_increasing:
+        raise ValueError("index must be sorted ascending")
+
     frame = pd.DataFrame(index=index)
     frame["residual"] = pd.to_numeric(np.asarray(residual, dtype=float), errors="coerce")
     tolerance = pd.Timedelta("3h")
-    if kp_series is not None:
-        frame["kp"] = kp_series.reindex(index, method="ffill", tolerance=tolerance)
-    else:
-        frame["kp"] = np.nan
-    if dst_series is not None:
-        frame["dst"] = dst_series.reindex(index, method="ffill", tolerance=tolerance)
-    else:
-        frame["dst"] = np.nan
+    for column, source in (("kp", kp_series), ("dst", dst_series)):
+        normalized = _normalize_index_series(source)
+        if normalized is None:
+            frame[column] = np.nan
+        else:
+            frame[column] = normalized.reindex(index, method="ffill", tolerance=tolerance)
     return frame
 
 
