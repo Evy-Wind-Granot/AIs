@@ -22,9 +22,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from scipy import linalg
 
-# ----------------------------------------------------------------------
-# Logging Setup
-# ----------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -32,14 +29,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger("magnetometer_pipeline")
 
-# ----------------------------------------------------------------------
-# Constants & Defaults
-# ----------------------------------------------------------------------
 INTERMAGNET_BASE = "https://imag-data.bgs.ac.uk/GIN_V1/GINServices"
 KP_GFZ_URL = "https://kp.gfz-potsdam.de/app/json/"
 DEFAULT_OBSERVATORY = "VIC"
 DEFAULT_SAMPLES_PER_DAY = "Minute"
-USER_AGENT = "MagnetometerProductionPipeline/1.0"
+USER_AGENT = "MagnetometerProductionPipeline/1.1"
+
+# Production activity policy. These values were selected on calibration data in
+# the production validation suite and are intentionally shared with the
+# performance/release-gate code. The final test set is never used to choose
+# these values automatically.
+PROD_UNSETTLED_NT = 10.0
+PROD_ACTIVE_NT = 15.0
+PROD_MINOR_STORM_NT = 35.0
+PROD_MAJOR_STORM_NT = 100.0
+PROD_SEVERE_STORM_NT = 200.0
+ANOMALY_DELTA_NT = 100.0
 
 
 def create_resilient_session(
@@ -64,9 +69,6 @@ def create_resilient_session(
 HTTP_CLIENT = create_resilient_session()
 
 
-# ----------------------------------------------------------------------
-# INTERMAGNET I/O
-# ----------------------------------------------------------------------
 def fetch_intermagnet_iaga2002(
     observatory: str = DEFAULT_OBSERVATORY,
     start_date: Optional[str] = None,
@@ -126,7 +128,7 @@ def parse_iaga2002_to_dataframe(text: str) -> pd.DataFrame:
         if len(parts) < len(col_names):
             continue
         dt = pd.to_datetime(f"{parts[0]} {parts[1]}", utc=True)
-        
+
         def parse_val(idx: Optional[int]) -> float:
             if idx is not None and idx < len(parts):
                 try:
@@ -148,9 +150,6 @@ def parse_iaga2002_to_dataframe(text: str) -> pd.DataFrame:
     return df.set_index("datetime").sort_index()
 
 
-# ----------------------------------------------------------------------
-# Global Index Fetchers
-# ----------------------------------------------------------------------
 def fetch_kp_gfz(start_date: str, end_date: str) -> pd.Series:
     url = f"{KP_GFZ_URL}?start={start_date}T00:00:00Z&end={end_date}T23:59:59Z&index=Kp"
     logger.info("Fetching Kp index from GFZ Potsdam...")
@@ -165,7 +164,6 @@ def fetch_kp_gfz(start_date: str, end_date: str) -> pd.Series:
 
 
 def fetch_dst_kyoto(year: int, month: int) -> Optional[pd.Series]:
-    """Fetches Dst index from Kyoto WDC with graceful error handling."""
     yy, mm = year % 100, month
     urls_to_try = [
         f"https://wdc.kugi.kyoto-u.ac.jp/dst_final/{year:04d}{mm:02d}/dst{yy:02d}{mm:02d}.for",
@@ -194,7 +192,7 @@ def fetch_dst_kyoto(year: int, month: int) -> Optional[pd.Series]:
                 day = int(line[8:10].strip())
                 hourly_part = line[20:116]
                 for hour in range(24):
-                    val_str = hourly_part[hour * 4 : (hour + 1) * 4].strip()
+                    val_str = hourly_part[hour * 4:(hour + 1) * 4].strip()
                     if val_str and val_str != "9999":
                         val = int(val_str)
                         dt = datetime(year, month, day, hour, 0, 0, tzinfo=timezone.utc)
@@ -208,9 +206,6 @@ def fetch_dst_kyoto(year: int, month: int) -> Optional[pd.Series]:
     return pd.DataFrame(rows).set_index("datetime")["dst"].sort_index()
 
 
-# ----------------------------------------------------------------------
-# Processing Engine
-# ----------------------------------------------------------------------
 def handle_gaps(series: pd.Series, max_gap_samples: int = 3) -> pd.Series:
     if series.empty:
         return series
@@ -234,8 +229,8 @@ def build_design_matrix(t_hours: np.ndarray, t_ref_min: float, t_ref_max: float)
         t_norm_clamped ** 2,
         np.sin(2 * np.pi * t / 24), np.cos(2 * np.pi * t / 24),
         np.sin(2 * np.pi * t / 12), np.cos(2 * np.pi * t / 12),
-        np.sin(2 * np.pi * t / 8),  np.cos(2 * np.pi * t / 8),
-        np.sin(2 * np.pi * t / 6),  np.cos(2 * np.pi * t / 6),
+        np.sin(2 * np.pi * t / 8), np.cos(2 * np.pi * t / 8),
+        np.sin(2 * np.pi * t / 6), np.cos(2 * np.pi * t / 6),
     ]
     return np.column_stack(cols)
 
@@ -253,10 +248,10 @@ def robust_harmonic_baseline(
     n = len(x)
     if t_hours is None:
         t_hours = np.arange(n) * cadence_s / 3600.0
-    
+
     ref_min = t_hours.min() if t_ref_min is None else t_ref_min
     ref_max = t_hours.max() if t_ref_max is None else t_ref_max
-    
+
     A = build_design_matrix(t_hours, ref_min, ref_max)
     valid = np.isfinite(x)
     w = np.ones(n)
@@ -273,7 +268,7 @@ def robust_harmonic_baseline(
         resid = x - pred
         mad = np.median(np.abs(resid[valid] - np.median(resid[valid])))
         sigma = 1.4826 * mad + 1e-12
-        
+
         w = np.ones(n)
         w[~valid] = 0.0
         w[np.abs(resid) > outlier_threshold_nt] = 0.1
@@ -282,28 +277,71 @@ def robust_harmonic_baseline(
     return A @ coeffs, coeffs
 
 
-def flag_activity(residual: np.ndarray) -> np.ndarray:
-    r = np.abs(residual)
+def _persistent_mask(mask: np.ndarray, min_samples: int, release_samples: int = 0) -> np.ndarray:
+    """Require persistence before opening a detection; optionally add hysteresis on release."""
+    mask = np.asarray(mask, dtype=bool)
+    if mask.size == 0 or min_samples <= 1:
+        return mask.copy()
+
+    starts = np.flatnonzero(np.r_[False, mask[1:] & ~mask[:-1]])
+    ends = np.flatnonzero(np.r_[mask[:-1] & ~mask[1:], False]) + 1
+    out = np.zeros_like(mask)
+    for start, end in zip(starts, ends):
+        run = end - start
+        if run >= min_samples:
+            out[start:end] = True
+
+    if release_samples > 0:
+        padded = np.r_[False, out, False]
+        starts = np.flatnonzero(~padded[:-1] & padded[1:])
+        ends = np.flatnonzero(padded[:-1] & ~padded[1:])
+        for start, end in zip(starts, ends):
+            extra_end = min(len(out), end + release_samples)
+            out[start:extra_end] = True
+
+    return out
+
+
+def flag_activity(residual: np.ndarray, cadence_s: float = 60.0) -> np.ndarray:
+    """Production activity classifier with calibration-selected thresholds and persistence."""
+    residual = np.asarray(residual, dtype=float)
+    magnitude = np.abs(residual)
+
+    # Short median filter suppresses isolated spikes without erasing sustained
+    # geomagnetic excursions. Windows are capped for very coarse cadence.
+    smooth_samples = max(1, int(round(15 * 60 / max(cadence_s, 1.0))))
+    smooth_samples = min(smooth_samples, 31)
+    if smooth_samples % 2 == 0:
+        smooth_samples += 1
+    smooth = pd.Series(magnitude).rolling(smooth_samples, center=True, min_periods=1).median().to_numpy()
+
+    active_raw = smooth > PROD_ACTIVE_NT
+    storm_raw = smooth > PROD_MINOR_STORM_NT
+
+    # Persistence is intentionally modest: 10 minutes for activation and
+    # 15 minutes for storm classification. This prevents single-point noise
+    # while still catching rapidly developing disturbances.
+    active_min = max(1, int(round(10 * 60 / max(cadence_s, 1.0))))
+    storm_min = max(1, int(round(15 * 60 / max(cadence_s, 1.0))))
+    active = _persistent_mask(active_raw, active_min)
+    storm = _persistent_mask(storm_raw, storm_min)
+
     flags = np.full(len(residual), "quiet", dtype=object)
-    
-    flags[r > 15] = "unsettled"
-    flags[r > 35] = "active"
-    flags[r > 70] = "minor_storm"
-    flags[r > 150] = "major_storm"
-    flags[r > 300] = "severe_storm"
-    
+    flags[smooth > PROD_UNSETTLED_NT] = "unsettled"
+    flags[active] = "active"
+    flags[storm] = "minor_storm"
+    flags[smooth > PROD_MAJOR_STORM_NT] = "major_storm"
+    flags[smooth > PROD_SEVERE_STORM_NT] = "severe_storm"
+
     diff = np.diff(residual, prepend=residual[0])
-    flags[np.abs(diff) > 100] = "anomaly"
+    anomaly = np.abs(diff) > ANOMALY_DELTA_NT
+    flags[anomaly & ~active & ~storm] = "anomaly"
     return flags
 
 
-def cross_validate_flags(
-    local_flags: np.ndarray,
-    dst_vals: np.ndarray,
-    kp_vals: np.ndarray,
-) -> np.ndarray:
+def cross_validate_flags(local_flags: np.ndarray, dst_vals: np.ndarray, kp_vals: np.ndarray) -> np.ndarray:
     validation = np.full(len(local_flags), "ok", dtype=object)
-    
+
     for i in range(len(local_flags)):
         local = local_flags[i]
         dst = dst_vals[i] if np.isfinite(dst_vals[i]) else None
@@ -311,15 +349,14 @@ def cross_validate_flags(
 
         global_main_phase = (dst is not None and dst < -50) or (kp is not None and kp >= 6)
         global_active = (dst is not None and dst < -30) or (kp is not None and kp >= 4)
-        global_calm = not global_active and not global_main_phase
-        
+
         if local == "quiet" and global_main_phase:
             validation[i] = "missed_global_event"
-        elif local == "quiet" and global_active:
+        elif local in ("quiet", "unsettled") and global_active:
             validation[i] = "under_reacting"
-        elif local in ("major_storm", "severe_storm") and global_calm:
+        elif local in ("major_storm", "severe_storm") and not global_active:
             validation[i] = "unconfirmed_storm"
-            
+
     return validation
 
 
@@ -337,31 +374,28 @@ def run_analysis(
 
     baseline = np.zeros(n, dtype=float)
     weights = np.zeros(n, dtype=float)
-    
+
     window_samples = int(24 * 3600 / cadence_s)
-    step_samples = window_samples // 2
+    step_samples = max(1, window_samples // 2)
     t_global = np.arange(n) * cadence_s / 3600.0
     t_min, t_max = t_global.min(), t_global.max()
-    
     last_good_coeffs = None
 
     for start in range(0, max(1, n - step_samples), step_samples):
         end = min(start + window_samples, n)
         if end - start < step_samples // 2:
             break
-            
+
         segment = x[start:end]
         t_seg = t_global[start:end]
-
         if np.isfinite(segment).sum() < (end - start) * 0.5:
             continue
 
         seg_base, coeffs = robust_harmonic_baseline(
             segment, cadence_s, t_hours=t_seg, t_ref_min=t_min, t_ref_max=t_max
         )
-        
         seg_res = segment - seg_base
-        storm_frac = np.sum(np.abs(seg_res) > 50) / len(segment)
+        storm_frac = np.mean(np.abs(seg_res) > 50.0)
 
         if storm_frac > 0.05 and last_good_coeffs is not None:
             A_seg = build_design_matrix(t_seg, t_min, t_max)
@@ -375,19 +409,18 @@ def run_analysis(
         weights[start:end] += w_win
 
     weights_mask = weights > 0
+    fallback = np.nanmedian(x)
     baseline[weights_mask] /= weights[weights_mask]
-    baseline[~weights_mask] = np.nanmedian(x)
+    baseline[~weights_mask] = fallback
 
     residual = x - baseline
-    flags = flag_activity(residual)
+    flags = flag_activity(residual, cadence_s=cadence_s)
 
     if dst_series is not None or kp_series is not None:
-        index = pd.date_range(start=start_time, periods=n, freq=pd.Timedelta(seconds=cadence_s))
+        index = pd.date_range(start=start_time, periods=n, freq=pd.Timedelta(seconds=cadence_s), tz="UTC")
         df_align = pd.DataFrame(index=index)
-        
         df_align["dst"] = dst_series.reindex(index, method="ffill", tolerance=pd.Timedelta("3h")) if dst_series is not None else np.nan
         df_align["kp"] = kp_series.reindex(index, method="ffill", tolerance=pd.Timedelta("3h")) if kp_series is not None else np.nan
-
         validation = cross_validate_flags(flags, df_align["dst"].values, df_align["kp"].values)
     else:
         validation = np.full(n, "no_index_data", dtype=object)
@@ -402,17 +435,9 @@ def run_analysis(
     logger.info(f"Overall Residual RMS: {np.std(residual):.2f} nT")
     logger.info(f"Residual Range: {np.min(residual):.2f} nT to {np.max(residual):.2f} nT")
 
-    return {
-        "baseline": baseline,
-        "residual": residual,
-        "flags": flags,
-        "validation": validation,
-    }
+    return {"baseline": baseline, "residual": residual, "flags": flags, "validation": validation}
 
 
-# ----------------------------------------------------------------------
-# CLI Entrypoint
-# ----------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="Magnetometer Pipeline.")
     ap.add_argument("--fetch-real-data", action="store_true")
@@ -442,20 +467,18 @@ def main():
     if args.cross_check_indices:
         start_dt = pd.to_datetime(df.index.min())
         end_dt = pd.to_datetime(df.index.max())
-        
         try:
             kp_series = fetch_kp_gfz(start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d"))
-        except Exception as e:
-            logger.warning(f"Kp cross-validation disabled: {e}")
-
+        except Exception as exc:
+            logger.warning(f"Kp cross-validation disabled: {exc}")
         try:
             months = sorted({(dt.year, dt.month) for dt in pd.date_range(start_dt, end_dt, freq="D")})
             dst_parts = [fetch_dst_kyoto(y, m) for y, m in months]
             valid_dst = [p for p in dst_parts if p is not None]
             if valid_dst:
                 dst_series = pd.concat(valid_dst).sort_index()
-        except Exception as e:
-            logger.warning(f"Dst cross-validation disabled: {e}")
+        except Exception as exc:
+            logger.warning(f"Dst cross-validation disabled: {exc}")
 
     run_analysis(
         x,
