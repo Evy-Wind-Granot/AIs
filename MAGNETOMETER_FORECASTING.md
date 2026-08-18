@@ -7,16 +7,15 @@ The production magnetometer pipeline has an optional ML forecasting layer on top
 - Deterministic QDC/baseline processing remains the source of truth for the current real-time tier.
 - Forecast context uses the causal residual (`Observed - QDC`) plus rolling statistics at 15m, 30m, 1h, 3h, 6h, and 12h scales.
 - Kp and Dst are delayed by conservative release lags (3h for Kp, 1h for Dst) so finalized global-index values cannot leak into an earlier prediction timestamp.
-- Forecast horizons are +1h, +3h, and +6h. The model learns from weeks-to-months of historical data rather than attempting an unreliable weeks-ahead local forecast.
-- Each horizon has a gradient-boosted regression model for strictly future residual amplitude and a binary model for minor-storm-or-higher probability.
-- The design is intentionally gray-box: deterministic physics/QDC processing supplies the state representation and the ML model learns the residual disturbance dynamics.
-- Production evaluation is chronological, target-aware, and uses a persistence baseline. The final test period is never used for model selection.
-
-This follows current space-weather forecasting practice: operational systems distinguish nowcasts from forecasts, probabilistic forecasts are increasingly emphasized, and hybrid physics/ML (gray-box) systems are a recognized approach. NOAA's operational geomagnetic products also provide deterministic and probabilistic forecasts over short horizons. 
+- Missing Kp/Dst are represented explicitly with availability and age features; missing global indices are never fabricated.
+- Forecast horizons are +1h, +3h, and +6h.
+- Each horizon has a gradient-boosted regression model for the correction to causal persistence plus a binary minor-storm-or-higher classifier.
+- A validation-only blend weight combines ML and persistence. A weight of zero is a safe persistence fallback for a horizon where ML adds no value.
+- The design is intentionally gray-box: deterministic QDC processing supplies the state representation and the ML model learns residual disturbance dynamics.
 
 ## Leakage-safe training protocol
 
-For the current 1h/3h/6h horizons with a 3-hour amplitude target window, the maximum target reach is 9 hours. The training script therefore inserts a **9-hour purge gap** between train/validation and validation/test periods. This prevents future target windows from crossing a partition boundary.
+For the current 1h/3h/6h horizons with a 3-hour amplitude target window, the maximum target reach is 9 hours. The training script inserts a **9-hour purge gap** between train/validation and validation/test periods.
 
 The target at time `t` is the peak-to-peak residual amplitude in:
 
@@ -32,21 +31,18 @@ The production split is approximately:
 65% TRAIN | 9h PURGE | 15% VALIDATION | 9h PURGE | 20% TEST
 ```
 
-This is deliberately different from a random train/test split.
+The untouched test set is never used to select hyperparameters or blend weights.
 
 ## Production gate
 
-A model is **not** published as a production artifact unless it beats the persistence baseline on every configured forecast horizon in the untouched chronological test set.
+A model is **not** published as a production artifact unless:
 
-If the gate fails, training exits with status `3` and leaves the existing artifact untouched.
+1. ML beats persistence at every configured horizon on the untouched chronological test set; and
+2. validation does not show more than a 2% MAE regression against persistence at any horizon.
 
-`--allow-nonbeating` exists only for research/candidate experiments. The live pipeline rejects artifacts whose metadata does not contain:
+If the gate fails, training exits with status `3` and leaves the production artifact untouched.
 
-```text
-production_gate = passed
-```
-
-Therefore an accidentally retained experimental model cannot silently become the live forecaster.
+`--save-candidate` can save a failed model under `models/artifacts/candidates/` for research, but the metadata remains `production_gate = failed` and the live pipeline refuses to load it.
 
 ## Train on real VIC data
 
@@ -65,23 +61,22 @@ The script:
 2. Runs the existing deterministic QDC/residual pipeline.
 3. Builds causal ML features and strictly future targets.
 4. Performs a purged chronological train/validation/test split.
-5. Reports ML versus persistence MAE/RMSE and storm precision/recall/F1.
-6. Refits only on train + validation after the model-selection stage.
-7. Applies the untouched test-set production gate.
-8. Writes `models/artifacts/<observatory>_forecaster.pkl` only after the gate passes.
+5. Calibrates the ML/persistence blend using validation only.
+6. Reports ML versus persistence MAE/RMSE and storm precision/recall/F1.
+7. Refits only on train + validation.
+8. Applies the untouched test-set production gate.
+9. Writes `models/artifacts/<observatory>_forecaster.pkl` only after the gate passes.
 
-If Dst is unavailable from Kyoto WDC, training continues without Dst and records that limitation in the model metadata. It does not fabricate Dst values.
-
-Model artifacts are intentionally ignored by Git.
+If Dst is unavailable from Kyoto WDC, training continues without Dst and records that limitation in model metadata. It does not fabricate Dst values.
 
 ## Live/batch inference
 
 Once a production-approved artifact exists, the normal pipeline automatically adds:
 
-- `forecast.horizons`: +1h/+3h/+6h amplitude, probability, tier, and confidence score.
-- `hybrid.real_time`: current deterministic tier.
+- `forecast.horizons`: +1h/+3h/+6h amplitude, probability, tier, confidence, data quality, and blend weight.
+- `hybrid.real_time`: current deterministic tier and source.
 - `hybrid.forecasted_status`: predicted tier by horizon.
-- `hybrid.model_confidence`: aggregate forecast confidence score.
+- `hybrid.model_confidence`: confidence by horizon.
 - `hybrid.divergence`: signed and absolute tier divergence.
 - `hybrid.divergence.significant`: true when the forecast differs by at least two activity tiers.
 
@@ -89,23 +84,18 @@ Set `MAGNETOMETER_FORECAST_MODEL` to override the default artifact path.
 
 If no approved artifact exists, inference remains deterministic. ML failure can never replace or alter the current deterministic classification.
 
-## Interpretation
-
-The local residual-amplitude tiers are intentionally kept separate from NOAA's planetary G-scale. NOAA defines geomagnetic storm levels from Kp, with G1 beginning at Kp=5 and higher G levels at Kp=6–9. The local VIC residual forecast is therefore an observatory-specific disturbance forecast, not a claim that a local 100 nT residual is equivalent to a particular global G-scale level.
-
-For operational use, treat the ML probability as a risk signal and validate its calibration on additional historical events before using it for automated protective actions. The deterministic classifier remains the current-state authority.
-
 ## Tests
 
-The normal test suite is offline:
+Offline tests include:
 
 ```bash
 python test_magnetometer_ml.py
+python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-It includes causal-feature tests, Kp/Dst release-lag tests, strict future-target leakage tests, model inference, evaluation, and serialization tests.
+They cover causal features, Kp/Dst release lags, missing-index signals, strict future targets, persistence-aware model inference, blend calibration, evaluation, and serialization.
 
-There is also an opt-in historical upstream-data regression test:
+Historical upstream-data regression remains opt-in:
 
 ```bash
 RUN_REAL_DATA_TESTS=1 python -m unittest test_magnetometer_ml_real.py
