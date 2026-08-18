@@ -51,15 +51,30 @@ class LiveDetectorTests(unittest.TestCase):
 
     def test_gradual_storm_starts_without_fast_trigger(self) -> None:
         """A slow amplitude build must not depend on the fast anomaly path."""
-        detector = self._detector()
+        detector = LiveDetector(
+            LiveConfig(
+                cadence_s=60.0,
+                baseline_window_min=60.0,
+                baseline_update_min=30.0,
+                amplitude_window_min=10.0,
+                fast_window_min=1.0,
+                amplitude_mode="range",
+                minor_storm_nt=80.0,
+                major_storm_nt=150.0,
+                severe_storm_nt=300.0,
+                event_start_samples=3,
+                event_clear_samples=3,
+                escalation_samples=2,
+            )
+        )
         t = datetime(2026, 1, 1, tzinfo=timezone.utc)
         for i in range(80):
             detector.update(t + timedelta(minutes=i), 100.0)
 
         events = []
-        # The 10-minute range crosses the storm threshold gradually, while no
-        # single sample is large enough to satisfy the fast anomaly threshold.
-        values = [140.0, 150.0, 160.0, 170.0, 180.0]
+        # The 10-minute range reaches 100 nT, but the 1-minute fast window
+        # remains quiet and each individual residual is below the fast trigger.
+        values = [50.0, 150.0, 50.0, 150.0, 50.0, 150.0]
         for offset, value in enumerate(values, start=80):
             result = detector.update(t + timedelta(minutes=offset), value)
             if result["event"] is not None:
@@ -68,6 +83,7 @@ class LiveDetectorTests(unittest.TestCase):
         self.assertTrue(events)
         self.assertEqual(events[0]["type"], "event_started")
         self.assertEqual(events[0]["trigger"], "storm")
+        self.assertFalse(events[0]["level"] == "candidate")
 
     def test_gap_ends_active_event(self) -> None:
         detector = self._detector()
