@@ -41,6 +41,30 @@ def _rate_of_change(series: pd.Series, cadence_s: float) -> pd.Series:
     return series.diff() / cadence_s
 
 
+def _normalise_index(
+    values: pd.Series | np.ndarray | None,
+    target_index: pd.DatetimeIndex,
+    name: str,
+    release_lag_min: int,
+) -> pd.Series:
+    """Align an external index without exposing values before their release time."""
+    if values is None:
+        return pd.Series(np.nan, index=target_index, dtype=float)
+
+    if isinstance(values, pd.Series):
+        aligned = values.astype(float).copy()
+        aligned.index = pd.DatetimeIndex(pd.to_datetime(aligned.index, utc=True))
+        if not aligned.index.is_monotonic_increasing:
+            aligned = aligned.sort_index()
+        aligned.index = aligned.index + pd.Timedelta(minutes=release_lag_min)
+        return aligned.reindex(target_index, method="ffill")
+
+    arr = np.asarray(values, dtype=float)
+    if len(arr) != len(target_index):
+        raise ValueError(f"{name} length must match residual length")
+    return pd.Series(arr, index=target_index, dtype=float)
+
+
 def build_features(
     residual: pd.Series | np.ndarray,
     kp: pd.Series | np.ndarray | None = None,
@@ -51,9 +75,10 @@ def build_features(
 ) -> pd.DataFrame:
     """Build a causal feature matrix from residual and optional global indices.
 
-    Series-valued Kp/Dst inputs are delayed by their conservative release lag:
-    three hours for Kp and one hour for Dst.  This prevents a finalized index
-    value from being exposed to a prediction timestamp inside its own interval.
+    All rolling statistics use only samples at or before the feature timestamp.
+    Series-valued Kp/Dst inputs are delayed by conservative release lags: three
+    hours for Kp and one hour for Dst. This prevents finalized global indices
+    from leaking into an earlier prediction timestamp.
     """
     if isinstance(residual, pd.Series):
         series = residual.astype(float).copy()
@@ -100,33 +125,15 @@ def build_features(
             samples, min_periods=samples
         ).mean()
 
+    max_lag = int(round(config.lookback_hours * 3600.0 / config.cadence_s))
     for minutes in (15, 30, 60, 180, 360, 720):
         lag = max(1, int(round(minutes * 60.0 / config.cadence_s)))
-        if lag <= int(round(config.lookback_hours * 3600.0 / config.cadence_s)):
+        if lag <= max_lag:
             frame[f"residual_lag_{minutes}m"] = series.shift(lag)
 
-    def _add_index(name: str, values: pd.Series | np.ndarray | None) -> None:
-        if values is None:
-            frame[name] = np.nan
-            return
-        if isinstance(values, pd.Series):
-            aligned = values.astype(float).copy()
-            aligned.index = pd.DatetimeIndex(pd.to_datetime(aligned.index, utc=True))
-            lag_min = (
-                config.kp_release_lag_min
-                if name == "kp"
-                else config.dst_release_lag_min
-            )
-            aligned.index = aligned.index + pd.Timedelta(minutes=lag_min)
-            frame[name] = aligned.reindex(idx, method="ffill")
-        else:
-            arr = np.asarray(values, dtype=float)
-            if len(arr) != len(frame):
-                raise ValueError(f"{name} length must match residual length")
-            frame[name] = arr
+    frame["kp"] = _normalise_index(kp, idx, "kp", config.kp_release_lag_min)
+    frame["dst"] = _normalise_index(dst, idx, "dst", config.dst_release_lag_min)
 
-    _add_index("kp", kp)
-    _add_index("dst", dst)
     for minutes in (180, 360, 720):
         samples = max(1, int(round(minutes * 60.0 / config.cadence_s)))
         frame[f"kp_mean_{minutes}m"] = frame["kp"].rolling(
@@ -153,7 +160,12 @@ def build_targets(
     horizons_hours: Sequence[int] = (1, 3, 6),
     amplitude_window_min: int = 180,
 ) -> dict[int, pd.Series]:
-    """Create leakage-safe future amplitudes strictly after each forecast time."""
+    """Create strictly-future disturbance-amplitude targets.
+
+    For timestamp ``t`` and horizon ``h``, the target is the peak-to-peak
+    residual amplitude in ``[t+h, t+h+window)``. No target sample overlaps the
+    feature timestamp, preventing look-ahead leakage at short horizons.
+    """
     if isinstance(residual, pd.Series):
         series = residual.astype(float).copy()
         series.index = pd.DatetimeIndex(pd.to_datetime(series.index, utc=True))
@@ -167,15 +179,27 @@ def build_targets(
         )
         series = pd.Series(values, index=index)
 
+    if not series.index.is_monotonic_increasing or series.index.has_duplicates:
+        raise ValueError("residual timestamps must be unique and increasing")
+    if amplitude_window_min <= 0:
+        raise ValueError("amplitude_window_min must be positive")
+
     window = max(1, int(round(amplitude_window_min * 60.0 / cadence_s)))
-    future_roll = series.iloc[::-1].rolling(window, min_periods=window)
-    future_amplitude = (future_roll.max() - future_roll.min()).iloc[::-1]
-    return {
-        int(h): future_amplitude.shift(
-            -max(1, int(round(h * 3600.0 / cadence_s)))
-        )
-        for h in horizons_hours
-    }
+    rolling_amplitude = (
+        series.rolling(window, min_periods=window).max()
+        - series.rolling(window, min_periods=window).min()
+    )
+
+    targets: dict[int, pd.Series] = {}
+    for horizon in horizons_hours:
+        if horizon <= 0:
+            raise ValueError("forecast horizons must be positive")
+        horizon_samples = max(1, int(round(horizon * 3600.0 / cadence_s)))
+        # rolling_amplitude[j] covers [j-window+1, j]. We need the first
+        # target sample at t+h, hence the endpoint is h+window-1.
+        shift = horizon_samples + window - 1
+        targets[int(horizon)] = rolling_amplitude.shift(-shift)
+    return targets
 
 
 __all__ = ["FeatureConfig", "build_features", "build_targets"]
