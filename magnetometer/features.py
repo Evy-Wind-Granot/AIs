@@ -1,13 +1,8 @@
-"""Causal feature engineering for short-horizon geomagnetic forecasting.
-
-The feature builder deliberately operates only on information available at the
-forecast timestamp.  It is therefore safe to use both for historical training
-and for live inference without changing the feature semantics.
-"""
+"""Causal feature engineering for short-horizon geomagnetic forecasting."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -29,7 +24,7 @@ class FeatureConfig:
         if not self.windows_min or any(w <= 0 for w in self.windows_min):
             raise ValueError("windows_min must contain positive values")
         if max(self.windows_min) > self.lookback_hours * 60:
-            raise ValueError("the largest feature window cannot exceed lookback_hours")
+            raise ValueError("largest feature window cannot exceed lookback_hours")
 
 
 def _rolling_energy(series: pd.Series, window: int) -> pd.Series:
@@ -38,7 +33,7 @@ def _rolling_energy(series: pd.Series, window: int) -> pd.Series:
 
 
 def _rate_of_change(series: pd.Series, cadence_s: float) -> pd.Series:
-    """First derivative in nT/s, using the immediately preceding sample."""
+    """First derivative in nT/s using the immediately preceding sample."""
     return series.diff() / cadence_s
 
 
@@ -50,26 +45,7 @@ def build_features(
     index: pd.DatetimeIndex | None = None,
     config: FeatureConfig = FeatureConfig(),
 ) -> pd.DataFrame:
-    """Build a causal feature matrix from residual and optional global indices.
-
-    Parameters
-    ----------
-    residual:
-        Observed-minus-QDC residual at the pipeline cadence.
-    kp, dst:
-        Global indices aligned to the same timestamps.  They are treated as
-        contemporaneous explanatory variables; callers must not provide values
-        from the future relative to the prediction timestamp.
-    index:
-        Required only when ``residual`` is an ndarray.  A UTC DatetimeIndex is
-        enforced for all outputs.
-
-    Returns
-    -------
-    pandas.DataFrame
-        One row per input timestamp.  The first rows are NaN until enough
-        history exists to compute every requested causal feature.
-    """
+    """Build a causal feature matrix from residual and optional global indices."""
     if isinstance(residual, pd.Series):
         series = residual.astype(float).copy()
         if index is not None:
@@ -80,7 +56,8 @@ def build_features(
         values = np.asarray(residual, dtype=float)
         if index is None:
             index = pd.date_range(
-                "1970-01-01", periods=len(values), freq=pd.Timedelta(seconds=config.cadence_s), tz="UTC"
+                "1970-01-01", periods=len(values),
+                freq=pd.Timedelta(seconds=config.cadence_s), tz="UTC"
             )
         if len(index) != len(values):
             raise ValueError("index length must match residual length")
@@ -110,8 +87,6 @@ def build_features(
             samples, min_periods=samples
         ).mean()
 
-    # Explicit lags provide the tree model with short-term temporal shape while
-    # keeping inference cheap.  They are all strictly historical.
     for minutes in (15, 30, 60, 180, 360, 720):
         lag = max(1, int(round(minutes * 60.0 / config.cadence_s)))
         if lag <= int(round(config.lookback_hours * 3600.0 / config.cadence_s)):
@@ -133,9 +108,6 @@ def build_features(
 
     _add_index("kp", kp)
     _add_index("dst", dst)
-
-    # Context-only rolling index statistics.  These remain causal even when the
-    # supplied index has a coarser cadence because the source is forward-filled.
     for minutes in (180, 360, 720):
         samples = max(1, int(round(minutes * 60.0 / config.cadence_s)))
         frame[f"kp_mean_{minutes}m"] = frame["kp"].rolling(samples, min_periods=1).mean()
@@ -154,13 +126,11 @@ def build_targets(
     horizons_hours: Sequence[int] = (1, 3, 6),
     amplitude_window_min: int = 180,
 ) -> dict[int, pd.Series]:
-    """Create leakage-safe future disturbance-amplitude targets.
+    """Create leakage-safe future amplitudes strictly after each forecast time.
 
-    For horizon ``h``, the target at time ``t`` is the trailing
-    ``amplitude_window_min`` disturbance amplitude evaluated at ``t+h``.  Thus
-    every training label represents what the deterministic classifier would
-    see at that future time, while the feature row itself only sees data at
-    ``t`` and earlier.
+    For horizon ``h`` the label is the peak-to-peak residual amplitude over the
+    *future* interval ``[t+h, t+h+amplitude_window]``.  No sample at or before
+    ``t`` can contribute to the label, which prevents temporal leakage.
     """
     if isinstance(residual, pd.Series):
         series = residual.astype(float).copy()
@@ -168,14 +138,17 @@ def build_targets(
     else:
         values = np.asarray(residual, dtype=float)
         index = pd.date_range(
-            "1970-01-01", periods=len(values), freq=pd.Timedelta(seconds=cadence_s), tz="UTC"
+            "1970-01-01", periods=len(values),
+            freq=pd.Timedelta(seconds=cadence_s), tz="UTC"
         )
         series = pd.Series(values, index=index)
 
     window = max(1, int(round(amplitude_window_min * 60.0 / cadence_s)))
-    future_amplitude = series.rolling(window, min_periods=window).max() - series.rolling(
-        window, min_periods=window
-    ).min()
+    # Reverse rolling computes a causal-looking statistic over [t, t+window).
+    # Shifting that statistic backwards by h places the complete target window
+    # strictly in the future relative to the feature timestamp.
+    future_roll = series.iloc[::-1].rolling(window, min_periods=window)
+    future_amplitude = (future_roll.max() - future_roll.min()).iloc[::-1]
     return {
         int(h): future_amplitude.shift(-max(1, int(round(h * 3600.0 / cadence_s))))
         for h in horizons_hours
