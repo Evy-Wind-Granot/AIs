@@ -363,15 +363,24 @@ def save_model(model: GeomagneticForecaster, path: str | Path) -> Path:
     return destination
 
 
-def load_model(path: str | Path) -> GeomagneticForecaster:
-    """Load and validate a production-approved forecaster artifact."""
+def load_model(
+    path: str | Path,
+    *,
+    require_production: bool = True,
+) -> GeomagneticForecaster:
+    """Load a model, requiring production approval by default.
+
+    Research/offline tests may explicitly pass ``require_production=False``.
+    The live pipeline always uses the safe default and therefore cannot load a
+    failed candidate artifact accidentally.
+    """
     with Path(path).open("rb") as handle:
         model = pickle.load(handle)
     if not isinstance(model, GeomagneticForecaster) or not model.fitted:
         raise ValueError("invalid or unfitted geomagnetic forecaster artifact")
     if model.training_metadata.get("schema_version", 0) < 3:
         raise ValueError("legacy forecast artifact requires retraining")
-    if model.training_metadata.get("production_gate") != "passed":
+    if require_production and model.training_metadata.get("production_gate") != "passed":
         raise ValueError("forecast artifact is not production-approved")
     return model
 
