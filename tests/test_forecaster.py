@@ -34,7 +34,8 @@ def test_forecaster_fit_predict_and_roundtrip(tmp_path: Path) -> None:
     config = ForecastConfig(max_iter=80, min_samples_leaf=8, validation_fraction=0.20)
     model = GeomagneticForecaster(config=config)
     report = model.fit(frame, cadence_s=60.0)
-    assert set(report["horizons"]) == {"1", "3", "6"}
+    assert set(report["calibration"]) == {"1", "3", "6"}
+    assert set(report["final_test"]) == {"1", "3", "6"}
 
     result = model.predict(frame.tail(720), cadence_s=60.0, current_rule_tier="quiet")
     assert set(result.horizons) == {"1", "3", "6"}
