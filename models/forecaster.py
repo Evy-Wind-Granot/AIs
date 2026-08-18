@@ -1,11 +1,4 @@
-"""Short-horizon hybrid geomagnetic forecasting.
-
-The forecaster uses scikit-learn gradient-boosted trees on causal, engineered
-features.  A separate regression and binary storm model is trained for each
-forecast horizon.  This is intentionally small and fast enough for a minute-
-cadence production monitoring loop while retaining a deterministic QDC/rule
-classifier as the source of truth for the current state.
-"""
+"""Short-horizon hybrid geomagnetic forecasting."""
 from __future__ import annotations
 
 import pickle
@@ -15,6 +8,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.metrics import (
     f1_score,
@@ -23,7 +17,6 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.dummy import DummyClassifier
 
 from magnetometer.features import FeatureConfig, build_features, build_targets
 
@@ -42,6 +35,8 @@ class ForecastConfig:
     minor_storm_nt: float = 100.0
     major_storm_nt: float = 400.0
     severe_storm_nt: float = 800.0
+    unsettled_nt: float = 20.0
+    active_nt: float = 30.0
     random_state: int = 42
     max_iter: int = 250
     learning_rate: float = 0.05
@@ -55,6 +50,10 @@ class ForecastConfig:
             raise ValueError("forecast horizons must be positive")
         if tuple(sorted(set(self.horizons_hours))) != self.horizons_hours:
             raise ValueError("horizons_hours must be sorted and unique")
+        if not self.feature_windows_min:
+            raise ValueError("feature_windows_min cannot be empty")
+        if max(self.feature_windows_min) > self.lookback_hours * 60:
+            raise ValueError("largest feature window cannot exceed lookback_hours")
 
 
 @dataclass(frozen=True)
@@ -89,13 +88,7 @@ class _HorizonModel:
 
 @dataclass
 class GeomagneticForecaster:
-    """Multi-horizon gradient-boosted forecaster.
-
-    ``fit`` expects a chronological feature frame and target dictionary.  The
-    caller is responsible for making the train/validation/test split
-    chronologically.  ``predict`` operates on the final available feature row
-    and returns one forecast per configured horizon.
-    """
+    """Multi-horizon gradient-boosted forecaster."""
 
     config: ForecastConfig = field(default_factory=ForecastConfig)
     feature_columns: tuple[str, ...] = ()
@@ -114,8 +107,7 @@ class GeomagneticForecaster:
         )
 
     def _classifier(self, y: np.ndarray) -> Any:
-        unique = np.unique(y)
-        if len(unique) < 2:
+        if np.unique(y).size < 2:
             return DummyClassifier(strategy="prior")
         return HistGradientBoostingClassifier(
             learning_rate=self.config.learning_rate,
@@ -127,15 +119,15 @@ class GeomagneticForecaster:
         )
 
     @staticmethod
-    def _prepare_X(frame: pd.DataFrame, columns: Sequence[str] | None = None) -> pd.DataFrame:
+    def _prepare_X(
+        frame: pd.DataFrame, columns: Sequence[str] | None = None
+    ) -> pd.DataFrame:
         X = frame.copy()
         if columns is not None:
             missing = [c for c in columns if c not in X.columns]
             if missing:
                 raise ValueError(f"missing feature columns: {missing[:8]}")
             X = X.loc[:, list(columns)]
-        # HistGradientBoosting accepts NaN, which is useful for temporarily
-        # unavailable Kp/Dst.  The first rows are still removed during training.
         return X.replace([np.inf, -np.inf], np.nan)
 
     def fit(
@@ -149,6 +141,8 @@ class GeomagneticForecaster:
         """Fit one regression and one storm classifier per horizon."""
         if not isinstance(features.index, pd.DatetimeIndex):
             raise TypeError("features must use a DatetimeIndex")
+        if not features.index.is_monotonic_increasing:
+            raise ValueError("features must be chronologically ordered")
         if not targets:
             raise ValueError("targets cannot be empty")
 
@@ -164,7 +158,9 @@ class GeomagneticForecaster:
             X = X_all.loc[valid]
             y_values = y.loc[valid].to_numpy(dtype=float)
             if len(y_values) < 100:
-                raise ValueError(f"not enough training samples for {horizon}h: {len(y_values)}")
+                raise ValueError(
+                    f"not enough training samples for {horizon}h: {len(y_values)}"
+                )
             if np.unique(y_values).size < 2:
                 raise ValueError(f"target has no variation for {horizon}h")
 
@@ -182,7 +178,7 @@ class GeomagneticForecaster:
             "training_start": training_start or features.index.min().isoformat(),
             "training_end": training_end or features.index.max().isoformat(),
             "horizons_hours": list(self.config.horizons_hours),
-            "target": "future trailing amplitude evaluated strictly after forecast time",
+            "target": "future amplitude strictly after forecast time",
         }
         return self
 
@@ -197,14 +193,11 @@ class GeomagneticForecaster:
         for horizon in self.config.horizons_hours:
             bundle = self.models[horizon]
             amplitude = float(max(0.0, bundle.regression.predict(X)[0]))
-            if hasattr(bundle.classifier, "predict_proba"):
-                probabilities = bundle.classifier.predict_proba(X)[0]
-                classes = list(getattr(bundle.classifier, "classes_", [0, 1]))
-                storm_probability = float(
-                    probabilities[classes.index(1)] if 1 in classes else 0.0
-                )
-            else:
-                storm_probability = float(bundle.classifier.predict(X)[0])
+            probabilities = bundle.classifier.predict_proba(X)[0]
+            classes = list(getattr(bundle.classifier, "classes_", [0, 1]))
+            storm_probability = float(
+                probabilities[classes.index(1)] if 1 in classes else 0.0
+            )
             tier = self.tier_from_amplitude(amplitude)
             confidence = float(min(1.0, abs(storm_probability - 0.5) * 2.0))
             results[int(horizon)] = {
@@ -221,9 +214,9 @@ class GeomagneticForecaster:
         features: pd.DataFrame,
         targets: Mapping[int, pd.Series],
     ) -> dict[int, ForecastEvaluation]:
-        """Evaluate a fitted model on a strictly held-out chronological set."""
-        predictions = {}
+        """Evaluate a fitted model on a chronological holdout."""
         X = self._prepare_X(features, self.feature_columns)
+        evaluations: dict[int, ForecastEvaluation] = {}
         for horizon in self.config.horizons_hours:
             y = pd.Series(targets[horizon], index=features.index, dtype=float)
             valid = y.notna() & X.notna().any(axis=1)
@@ -233,7 +226,7 @@ class GeomagneticForecaster:
             pred = np.maximum(0.0, bundle.regression.predict(xv))
             storm_true = yv >= self.config.minor_storm_nt
             storm_pred = pred >= self.config.minor_storm_nt
-            predictions[horizon] = ForecastEvaluation(
+            evaluations[horizon] = ForecastEvaluation(
                 horizon_hours=horizon,
                 n_samples=int(len(yv)),
                 rmse_nt=float(np.sqrt(mean_squared_error(yv, pred))),
@@ -242,19 +235,19 @@ class GeomagneticForecaster:
                 recall=float(recall_score(storm_true, storm_pred, zero_division=0)),
                 f1=float(f1_score(storm_true, storm_pred, zero_division=0)),
             )
-        return predictions
+        return evaluations
 
-    @staticmethod
-    def tier_from_amplitude(amplitude_nt: float) -> str:
-        if amplitude_nt >= 800.0:
+    def tier_from_amplitude(self, amplitude_nt: float) -> str:
+        """Map predicted amplitude to the configured deterministic tier scale."""
+        if amplitude_nt >= self.config.severe_storm_nt:
             return "severe_storm"
-        if amplitude_nt >= 400.0:
+        if amplitude_nt >= self.config.major_storm_nt:
             return "major_storm"
-        if amplitude_nt >= 100.0:
+        if amplitude_nt >= self.config.minor_storm_nt:
             return "minor_storm"
-        if amplitude_nt >= 30.0:
+        if amplitude_nt >= self.config.active_nt:
             return "active"
-        if amplitude_nt >= 20.0:
+        if amplitude_nt >= self.config.unsettled_nt:
             return "unsettled"
         return "quiet"
 
@@ -289,7 +282,7 @@ def build_training_data(
     cadence_s: float = 60.0,
     config: ForecastConfig = ForecastConfig(),
 ) -> tuple[pd.DataFrame, dict[int, pd.Series]]:
-    """Convenience wrapper used by training scripts and integration tests."""
+    """Build causal features and future targets for model training."""
     feature_config = FeatureConfig(
         cadence_s=cadence_s,
         lookback_hours=config.lookback_hours,
