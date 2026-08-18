@@ -1,11 +1,4 @@
-"""Causal, stateful magnetometer detector for live sensor streams.
-
-The live path deliberately separates fast event onset detection from slower
-storm classification.  A 120-minute trailing range is useful for classifying
-activity, but it is a poor trigger for a real-time monitor because it can delay
-onset detection.  The detector therefore maintains a short causal window for
-candidate detection and the long window for classification/escalation.
-"""
+"""Causal, stateful magnetometer detector for live sensor streams."""
 from __future__ import annotations
 
 from collections import deque
@@ -45,6 +38,8 @@ class LiveConfig:
     event_clear_samples: int = 10
     escalation_samples: int = 2
     max_gap_samples: int = 3
+    candidate_timeout_min: float = 30.0
+    max_event_duration_min: float = 720.0
 
     def __post_init__(self) -> None:
         if self.cadence_s <= 0:
@@ -63,12 +58,15 @@ class LiveConfig:
             raise ValueError(f"Unsupported amplitude_mode: {self.amplitude_mode}")
         if self.event_start_samples < 1 or self.event_clear_samples < 1:
             raise ValueError("event debounce sample counts must be >= 1")
+        if self.candidate_timeout_min <= 0 or self.max_event_duration_min <= 0:
+            raise ValueError("event duration limits must be > 0")
 
 
 @dataclass
 class _EventState:
     event_id: str
     started_at: str
+    started_ts: float
     level: str
     trigger: str
     peak_amplitude_nt: float
@@ -110,10 +108,6 @@ class _RollingExtrema:
         while len(self.values) > self.size:
             self.values.popleft()
         return self.minimum[0][1], self.maximum[0][1]
-
-    @property
-    def count(self) -> int:
-        return len(self.values)
 
 
 class LiveDetector:
@@ -192,9 +186,8 @@ class LiveDetector:
         if finite.mean() < c.baseline_min_coverage:
             return False
         times = np.asarray([t for t, _ in history], dtype=float)
-        self._baseline_origin_ts = float(times[0])
-        rel_hours = (times - self._baseline_origin_ts) / 3600.0
-        A = build_design_matrix(rel_hours)
+        origin = float(times[0])
+        A = build_design_matrix((times - origin) / 3600.0)
         baseline, coeffs = robust_harmonic_baseline(
             values, c.cadence_s, n_iter=4, outlier_threshold_nt=30.0, design_matrix=A
         )
@@ -205,6 +198,7 @@ class LiveDetector:
         rms = float(np.sqrt(np.mean(np.square(finite_res))))
         if not np.isfinite(rms) or rms > c.baseline_max_rms_nt:
             return False
+        self._baseline_origin_ts = origin
         self._baseline_coeffs = coeffs
         self._last_baseline_update_ts = now_ts
         return True
@@ -213,8 +207,7 @@ class LiveDetector:
         if self._baseline_coeffs is None or self._baseline_origin_ts is None:
             return None
         rel_hours = (timestamp - self._baseline_origin_ts) / 3600.0
-        A = build_design_matrix(np.asarray([rel_hours]))
-        return float(A[0] @ self._baseline_coeffs)
+        return float(build_design_matrix(np.asarray([rel_hours]))[0] @ self._baseline_coeffs)
 
     def _classify(self, amplitude: float, residual: float) -> str:
         c = self.config
@@ -234,46 +227,64 @@ class LiveDetector:
             return "unsettled"
         return "quiet"
 
-    @staticmethod
-    def _level_rank(level: str) -> int:
-        return LiveDetector.LEVELS.index(level) if level in LiveDetector.LEVELS else -1
+    @classmethod
+    def _level_rank(cls, level: str) -> int:
+        return cls.LEVELS.index(level) if level in cls.LEVELS else -1
 
-    def _event_update(
-        self,
-        level: str,
-        amplitude: float,
-        residual: float,
-        fast_trigger: bool,
-        timestamp: float,
-    ) -> Optional[Dict[str, Any]]:
+    def _end_event(self, timestamp: float, reason: str) -> Optional[Dict[str, Any]]:
+        event = self._event
+        if event is None:
+            return None
+        ts = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+        payload = {
+            "type": "event_ended",
+            "event_id": event.event_id,
+            "level": event.level,
+            "trigger": event.trigger,
+            "timestamp": ts,
+            "started_at": event.started_at,
+            "peak_amplitude_nt": event.peak_amplitude_nt,
+            "peak_residual_nt": event.peak_residual_nt,
+            "samples": event.samples,
+            "reason": reason,
+        }
+        self._event = None
+        self._below_active = 0
+        self._candidate_level = None
+        self._candidate_count = 0
+        return payload
+
+    def _event_update(self, level: str, amplitude: float, residual: float,
+                      fast_trigger: bool, timestamp: float) -> Optional[Dict[str, Any]]:
         c = self.config
         ts = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
         storm = self._level_rank(level) >= self._level_rank("minor_storm")
-        if storm:
-            self._above_minor += 1
-        else:
-            self._above_minor = 0
+        self._above_minor = self._above_minor + 1 if storm else 0
 
         if self._event is None:
-            if not fast_trigger:
+            # There are two intentionally independent onset paths:
+            # 1. a sustained fast anomaly for early warning;
+            # 2. a sustained storm classification for gradual events.
+            storm_ready = storm and self._above_minor >= c.event_start_samples
+            fast_ready = fast_trigger and self._fast_candidates >= c.event_start_samples
+            if not storm_ready and not fast_ready:
                 return None
-            if self._fast_candidates < c.event_start_samples:
-                return None
-            start_level = level if storm else "candidate"
-            event = _EventState(
+            trigger = "storm" if storm_ready else "fast"
+            start_level = level if storm_ready else "candidate"
+            self._event = _EventState(
                 event_id=uuid.uuid4().hex,
                 started_at=ts,
+                started_ts=timestamp,
                 level=start_level,
-                trigger="fast" if not storm else "storm",
+                trigger=trigger,
                 peak_amplitude_nt=float(amplitude),
                 peak_residual_nt=float(abs(residual)),
             )
-            self._event = event
             return {
                 "type": "event_started",
-                "event_id": event.event_id,
+                "event_id": self._event.event_id,
                 "level": start_level,
-                "trigger": event.trigger,
+                "trigger": trigger,
                 "timestamp": ts,
             }
 
@@ -281,6 +292,13 @@ class LiveDetector:
         event.samples += 1
         event.peak_amplitude_nt = max(event.peak_amplitude_nt, float(amplitude))
         event.peak_residual_nt = max(event.peak_residual_nt, float(abs(residual)))
+
+        age_min = (timestamp - event.started_ts) / 60.0
+        if age_min >= c.max_event_duration_min:
+            return self._end_event(timestamp, "max_duration")
+
+        if event.level == "candidate" and not storm and age_min >= c.candidate_timeout_min:
+            return self._end_event(timestamp, "candidate_timeout")
 
         if storm and self._level_rank(level) > self._level_rank(event.level):
             if self._candidate_level == level:
@@ -308,21 +326,7 @@ class LiveDetector:
         else:
             self._below_active = 0
         if self._below_active >= c.event_clear_samples:
-            payload = {
-                "type": "event_ended",
-                "event_id": event.event_id,
-                "level": event.level,
-                "trigger": event.trigger,
-                "timestamp": ts,
-                "started_at": event.started_at,
-                "peak_amplitude_nt": event.peak_amplitude_nt,
-                "peak_residual_nt": event.peak_residual_nt,
-                "samples": event.samples,
-            }
-            self._event = None
-            self._below_active = 0
-            self._above_minor = 0
-            return payload
+            return self._end_event(timestamp, "below_active")
         return None
 
     def update(self, timestamp: Any, value_nt: float) -> Dict[str, Any]:
@@ -330,31 +334,39 @@ class LiveDetector:
         ts = self._to_timestamp(timestamp)
         value = float(value_nt)
         gap = False
+        gap_event = None
+
         if self._last_timestamp is not None:
             delta = ts - self._last_timestamp
             if delta <= 0:
                 raise ValueError("timestamps must be strictly increasing")
             if delta > c.cadence_s * (c.max_gap_samples + 1):
                 gap = True
+                # Never carry an active event across a data outage. The caller
+                # receives the explicit termination and can restart cleanly.
+                gap_event = self._end_event(self._last_timestamp, "gap")
                 self._residuals.clear()
                 self._fast_residuals.clear()
                 self._last_residual = None
                 self._above_minor = 0
                 self._fast_candidates = 0
-                self._below_active = 0
+
         self._last_timestamp = ts
         self._raw.append((ts, value))
-
         max_raw = max(round(c.baseline_window_min * 60.0 / c.cadence_s) + c.max_gap_samples + 20, 120)
         while len(self._raw) > max_raw:
             self._raw.popleft()
 
-        if self._baseline_coeffs is None or self._last_baseline_update_ts is None or ts - self._last_baseline_update_ts >= c.baseline_update_min * 60.0:
+        if (self._baseline_coeffs is None or self._last_baseline_update_ts is None or
+                ts - self._last_baseline_update_ts >= c.baseline_update_min * 60.0):
             self._fit_baseline(ts)
 
         baseline = self._baseline_at(ts)
         if baseline is None:
-            result = {"status": "warming_up", "timestamp": datetime.fromtimestamp(ts, timezone.utc).isoformat(), "value_nt": value, "gap": gap, "event": None}
+            result = {
+                "status": "warming_up", "timestamp": datetime.fromtimestamp(ts, timezone.utc).isoformat(),
+                "value_nt": value, "gap": gap, "event": gap_event,
+            }
             self._last_result = result
             return result
 
@@ -362,6 +374,7 @@ class LiveDetector:
         if gap:
             self._residuals.clear()
             self._fast_residuals.clear()
+
         if np.isfinite(residual):
             slow_min, slow_max = self._residuals.append(residual)
             fast_min, fast_max = self._fast_residuals.append(residual)
@@ -382,13 +395,12 @@ class LiveDetector:
             fast_amplitude = float("nan")
             fast_trigger = False
 
-        if fast_trigger:
-            self._fast_candidates += 1
-        else:
-            self._fast_candidates = 0
-
+        self._fast_candidates = self._fast_candidates + 1 if fast_trigger else 0
         level = self._classify(float(amplitude), residual)
-        event = None if gap else self._event_update(level, float(amplitude), residual, fast_trigger, ts)
+        event = gap_event if gap_event is not None else self._event_update(
+            level, float(amplitude), residual, fast_trigger, ts
+        )
+
         result = {
             "status": "ok" if level != "invalid" else "invalid",
             "timestamp": datetime.fromtimestamp(ts, timezone.utc).isoformat(),
@@ -427,7 +439,7 @@ class LiveDetector:
 
     def state_dict(self) -> Dict[str, Any]:
         return {
-            "version": 2,
+            "version": 3,
             "last_timestamp": self._last_timestamp,
             "baseline_coeffs": self._baseline_coeffs.tolist() if self._baseline_coeffs is not None else None,
             "baseline_origin_ts": self._baseline_origin_ts,
