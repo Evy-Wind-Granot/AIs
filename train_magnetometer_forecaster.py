@@ -4,7 +4,7 @@
 The training protocol is deliberately operational rather than a random ML
 split: chronological train/validation/test partitions, a purge gap covering
 the complete future-target reach, persistence baselines, and a production
- gate that refuses to publish an artifact which cannot beat persistence.
+gate that refuses to publish an artifact which cannot beat persistence.
 
 Example:
     python train_magnetometer_forecaster.py --observatory VIC \
@@ -294,12 +294,12 @@ def main() -> int:
         validation_baseline,
     )
 
-    # Fit only on observations strictly before the final test period. The
-    # target-aware purge is retained by starting the test after test_start.
-    pre_test_end = test_features.index[0]
-    final_train_features = features.loc[features.index < pre_test_end]
+    # Refit on train + validation only. The explicit purge interval before
+    # validation and before test is never included in the final training set.
+    final_train_features = pd.concat([train_features, validation_features])
     final_train_targets = {
-        h: target.loc[final_train_features.index] for h, target in targets.items()
+        h: pd.concat([train_targets[h], validation_targets[h]])
+        for h in targets
     }
     final_model = GeomagneticForecaster(config).fit(
         final_train_features, final_train_targets
