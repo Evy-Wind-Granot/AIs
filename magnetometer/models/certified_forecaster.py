@@ -22,8 +22,13 @@ from sklearn.isotonic import IsotonicRegression
 
 from . import production_forecaster as _production
 
-CERTIFIED_MODEL_VERSION = "2.1.0"
+CERTIFIED_MODEL_VERSION = "2.1.1"
 _production.MODEL_VERSION = CERTIFIED_MODEL_VERSION
+
+# Preserve the real production selector before GeomagneticForecaster.fit()
+# temporarily installs the robust selector.  Calling the module attribute from
+# inside _choose_robust_threshold() would otherwise recurse into itself.
+_BASE_CHOOSE_OPERATING_THRESHOLD = _production._choose_operating_threshold
 
 
 class _IsotonicCalibratedClassifier:
@@ -70,7 +75,7 @@ def _choose_robust_threshold(
     y = np.asarray(y_true, dtype=int)
     p = np.clip(np.asarray(probability, dtype=float), 0.0, 1.0)
     if len(y) < 400:
-        return _production._choose_operating_threshold(
+        return _BASE_CHOOSE_OPERATING_THRESHOLD(
             y, p, min_precision=min_precision, max_far=max_far
         )
 
@@ -119,7 +124,7 @@ def _choose_robust_threshold(
             "selected_metrics": _production._binary_metrics(y, p, threshold),
         }
 
-    threshold, fallback = _production._choose_operating_threshold(
+    threshold, fallback = _BASE_CHOOSE_OPERATING_THRESHOLD(
         y, p, min_precision=min_precision, max_far=max_far
     )
     fallback["method"] = "fallback_single_window_no_robust_constraint"
