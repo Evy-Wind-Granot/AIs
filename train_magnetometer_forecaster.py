@@ -17,6 +17,7 @@ ROOT = HERE.parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+from feature_engineering import build_supervised_dataset  # noqa: E402
 from magnetometer_demo import (  # noqa: E402
     fetch_dst_kyoto,
     fetch_intermagnet_iaga2002,
@@ -73,9 +74,7 @@ def _prepare_window(observatory: str, start_date: str, days: int, column: str) -
         if np.isfinite(segment).sum() < (end - start) * 0.5:
             continue
         t_seg = t_global[start:end]
-        seg_base, coeffs = robust_harmonic_baseline(
-            segment, cadence, t_hours=t_seg, t_ref_min=t_min, t_ref_max=t_max
-        )
+        seg_base, coeffs = robust_harmonic_baseline(segment, cadence, t_hours=t_seg, t_ref_min=t_min, t_ref_max=t_max)
         seg_res = segment - seg_base
         storm_frac = np.mean(np.abs(seg_res) > 50.0)
         if storm_frac > 0.05 and last_good is not None:
@@ -103,6 +102,56 @@ def _prepare_window(observatory: str, start_date: str, days: int, column: str) -
     return frame
 
 
+def _evaluate_validation_tail(model: GeomagneticForecaster, frame: pd.DataFrame, cadence_s: float) -> dict:
+    """Evaluate only the chronological validation tail, retaining causal context."""
+    features, targets = build_supervised_dataset(
+        frame,
+        cadence_s=cadence_s,
+        windows_minutes=model.config.windows_minutes,
+        lags_minutes=model.config.lags_minutes,
+        horizons_hours=model.config.horizons_hours,
+        storm_threshold_nt=model.config.storm_threshold_nt,
+    )
+    validation_start = pd.Timestamp(model.training_metadata["validation_start"])
+    evaluation_mask = features.index >= validation_start
+    evaluation_frame = frame.loc[frame.index >= validation_start]
+    # Build metrics on the holdout rows only. The full frame above is used to
+    # construct causal rolling context, but no pre-holdout row enters the score.
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, precision_recall_fscore_support
+    report = {"horizons": {}}
+    x = model._sanitize_features(features.loc[:, model.feature_names])
+    for horizon in model.config.horizons_hours:
+        peak_col = f"target_peak_abs_{horizon}h"
+        storm_col = f"target_storm_{horizon}h"
+        mask = evaluation_mask & targets[peak_col].notna() & targets[storm_col].notna()
+        pred_peak = np.clip(model.regressors[int(horizon)].predict(x.loc[mask]), 0.0, None)
+        pred_prob = model.classifiers[int(horizon)].predict_proba(x.loc[mask])[:, 1]
+        y_peak = targets.loc[mask, peak_col].to_numpy(dtype=float)
+        y_storm = targets.loc[mask, storm_col].to_numpy(dtype=int)
+        current_abs = np.abs(features.loc[mask, "residual"].to_numpy(dtype=float))
+        pred_class = pred_prob >= model.config.probability_threshold
+        precision, recall, f1, _ = precision_recall_fscore_support(y_storm, pred_class, average="binary", zero_division=0)
+        tn = int(np.sum(~pred_class & ~(y_storm.astype(bool))))
+        fp = int(np.sum(pred_class & ~(y_storm.astype(bool))))
+        far = float(fp / (fp + tn)) if fp + tn else None
+        report["horizons"][str(horizon)] = {
+            "samples": int(mask.sum()),
+            "rmse_nt": float(np.sqrt(mean_squared_error(y_peak, pred_peak))),
+            "mae_nt": float(mean_absolute_error(y_peak, pred_peak)),
+            "storm": {
+                "precision": float(precision),
+                "recall": float(recall),
+                "f1": float(f1),
+                "false_alarm_rate": far,
+                "threshold": float(model.config.probability_threshold),
+            },
+            "persistence_rmse_nt": float(np.sqrt(mean_squared_error(y_peak, current_abs))),
+            "persistence_mae_nt": float(mean_absolute_error(y_peak, current_abs)),
+            "persistence_context_samples": int(len(evaluation_frame)),
+        }
+    return report
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train/evaluate geomagnetic ML forecaster")
     ap.add_argument("--observatory", default="VIC")
@@ -127,7 +176,7 @@ def main() -> None:
         config = ForecastConfig(backend="sklearn", min_samples_leaf=10, max_iter=120)
         model = GeomagneticForecaster(config=config)
         model.fit(frame, cadence_s=60.0)
-        report = evaluate_forecast(model, frame, cadence_s=60.0)
+        report = _evaluate_validation_tail(model, frame, 60.0)
         model.save_model(Path(args.model_path))
         loaded = GeomagneticForecaster.load_model(Path(args.model_path))
         prediction = loaded.predict(frame.tail(720), cadence_s=60.0, current_rule_tier="quiet")
@@ -143,7 +192,7 @@ def main() -> None:
     config = ForecastConfig(backend=args.backend, validation_fraction=args.validation_fraction)
     model = GeomagneticForecaster(config=config)
     training_report = model.fit(frame, cadence_s=60.0)
-    evaluation = evaluate_forecast(model, frame, cadence_s=60.0)
+    evaluation = _evaluate_validation_tail(model, frame, 60.0)
     model.save_model(Path(args.model_path))
 
     report = {
