@@ -3,7 +3,10 @@
 
 The replay is deliberately independent of future observations. It normalizes
 chunk boundaries before scoring so overlapping upstream responses or duplicate
-timestamps cannot inflate truth counts.
+timestamps cannot inflate truth counts. Event scoring is interval-based: an
+alert that starts shortly before a reference storm is an early warning, not a
+miss simply because its ``event_started`` timestamp precedes the reference
+onset.
 """
 from __future__ import annotations
 
@@ -46,11 +49,14 @@ class ReplayMetrics:
     events_ended: int = 0
     truth_events: int = 0
     truth_events_detected: int = 0
-    latencies_min: list[float] | None = None
+    onset_deltas_min: list[float] | None = None
+    lead_times_min: list[float] | None = None
 
     def __post_init__(self) -> None:
-        if self.latencies_min is None:
-            self.latencies_min = []
+        if self.onset_deltas_min is None:
+            self.onset_deltas_min = []
+        if self.lead_times_min is None:
+            self.lead_times_min = []
 
 
 def _month_windows(start: pd.Timestamp, end: pd.Timestamp):
@@ -63,7 +69,6 @@ def _month_windows(start: pd.Timestamp, end: pd.Timestamp):
 
 
 def _as_utc_timestamp(value) -> pd.Timestamp:
-    """Normalize naive or tz-aware timestamp-like values to UTC."""
     ts = pd.Timestamp(value)
     if ts.tzinfo is None:
         return ts.tz_localize("UTC")
@@ -104,6 +109,72 @@ def _event_type(result: dict) -> Optional[str]:
     return event.get("type") if isinstance(event, dict) else None
 
 
+def _close_event_intervals(
+    event_intervals: dict[str, dict],
+    last_timestamp: Optional[pd.Timestamp],
+) -> list[dict]:
+    if last_timestamp is not None:
+        for event in event_intervals.values():
+            if event.get("end") is None:
+                event["end"] = last_timestamp
+    return [e for e in event_intervals.values() if e.get("start") is not None and e.get("end") is not None]
+
+
+def _match_events(
+    truth_events: list[tuple[pd.Timestamp, pd.Timestamp]],
+    detector_events: list[dict],
+    max_early_warning_min: float = 180.0,
+) -> tuple[int, list[float], list[float]]:
+    """Greedily match detector intervals to reference intervals.
+
+    A detector event counts when its interval overlaps a truth event, or when
+    it starts before truth onset but no more than ``max_early_warning_min``
+    early and remains active into the truth interval. Each detector event is
+    used at most once.
+    """
+    matched = 0
+    onset_deltas: list[float] = []
+    lead_times: list[float] = []
+    used: set[str] = set()
+
+    for truth_start, truth_end in truth_events:
+        candidates = []
+        for event in detector_events:
+            event_id = event["event_id"]
+            if event_id in used:
+                continue
+            event_start = event["start"]
+            event_end = event["end"]
+            if event_end < truth_start:
+                continue
+            early_min = (truth_start - event_start).total_seconds() / 60.0
+            if early_min > max_early_warning_min:
+                continue
+            if event_start > truth_end:
+                continue
+            overlap_start = max(event_start, truth_start)
+            overlap_end = min(event_end, truth_end)
+            if overlap_start > overlap_end:
+                continue
+            overlap_seconds = (overlap_end - overlap_start).total_seconds()
+            candidates.append((overlap_seconds, event_start, event_id))
+
+        if not candidates:
+            continue
+
+        # Prefer the detector interval with the greatest overlap; break ties
+        # in favour of the earliest onset so early warnings are preserved.
+        _, detector_start, event_id = max(candidates, key=lambda item: (item[0], -item[1].value))
+        used.add(event_id)
+        matched += 1
+        delta = (detector_start - truth_start).total_seconds() / 60.0
+        onset_deltas.append(delta)
+        if delta < 0:
+            lead_times.append(-delta)
+
+    return matched, onset_deltas, lead_times
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--observatory", required=True)
@@ -120,6 +191,13 @@ def main() -> int:
 
     load_config(args.config)
     detector = LiveDetector.from_pipeline_defaults()
+    print(
+        "Detector config: "
+        f"amplitude_window={detector.config.amplitude_window_min:g}min, "
+        f"minor_storm={detector.config.minor_storm_nt:g}nT, "
+        f"fast_window={detector.config.fast_window_min:g}min, "
+        f"start_debounce={detector.config.event_start_samples} samples"
+    )
 
     print(f"Fetching global validation indices for {start.date()} -> {end.date()} ...")
     kp, dst = fetch_global_indices(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
@@ -132,6 +210,8 @@ def main() -> int:
     metrics = ReplayMetrics()
     predictions: dict[str, dict] = {}
     truth_parts: list[pd.Series] = []
+    event_intervals: dict[str, dict] = {}
+    last_seen_timestamp: Optional[pd.Timestamp] = None
 
     for chunk_start, chunk_end in _month_windows(start, end):
         days = max(1, int((chunk_end - chunk_start).total_seconds() // 86400))
@@ -158,14 +238,16 @@ def main() -> int:
         truth_parts.append(pd.Series(global_level, index=frame.index, dtype=float))
 
         for timestamp, row in frame.iterrows():
+            timestamp_utc = _as_utc_timestamp(timestamp)
+            last_seen_timestamp = timestamp_utc
             value = _safe_float(row.get("f_nt"))
             try:
-                result = detector.update(timestamp, value)
+                result = detector.update(timestamp_utc, value)
             except Exception as exc:
                 result = {
                     "status": "error",
                     "error": str(exc),
-                    "timestamp": _as_utc_timestamp(timestamp).isoformat(),
+                    "timestamp": timestamp_utc.isoformat(),
                     "event": None,
                 }
 
@@ -184,14 +266,26 @@ def main() -> int:
             kind = _event_type(result)
             if kind == "event_started":
                 metrics.events_started += 1
+                event = result["event"]
+                event_intervals[event["event_id"]] = {
+                    "event_id": event["event_id"],
+                    "start": timestamp_utc,
+                    "end": None,
+                    "level": event.get("level"),
+                    "trigger": event.get("trigger"),
+                }
             elif kind == "event_escalated":
                 metrics.events_escalated += 1
             elif kind == "event_ended":
                 metrics.events_ended += 1
+                event = result["event"]
+                if event["event_id"] in event_intervals:
+                    event_intervals[event["event_id"]]["end"] = timestamp_utc
+                    event_intervals[event["event_id"]]["level"] = event.get("level")
 
             event = result.get("event") if isinstance(result.get("event"), dict) else None
             record = {
-                "timestamp": _as_utc_timestamp(timestamp).isoformat(),
+                "timestamp": timestamp_utc.isoformat(),
                 "level": result.get("level"),
                 "status": status,
                 "amplitude_nt": result.get("amplitude_nt"),
@@ -199,7 +293,7 @@ def main() -> int:
                 "fast_trigger": result.get("fast_trigger", False),
                 "event": event,
             }
-            key = _as_utc_timestamp(timestamp).isoformat()
+            key = timestamp_utc.isoformat()
             if key in predictions:
                 metrics.duplicate_samples += 1
             predictions[key] = record
@@ -236,25 +330,19 @@ def main() -> int:
     metrics.global_truth = int(valid.sum())
 
     truth_events = _truth_events(truth_index, truth_level)
+    detector_events = _close_event_intervals(event_intervals, last_seen_timestamp)
     metrics.truth_events = len(truth_events)
-    starts = sorted(
-        _as_utc_timestamp(p["timestamp"])
-        for p in predictions.values()
-        if isinstance(p.get("event"), dict) and p["event"].get("type") == "event_started"
+    metrics.truth_events_detected, metrics.onset_deltas_min, metrics.lead_times_min = _match_events(
+        truth_events, detector_events
     )
-
-    used: set[pd.Timestamp] = set()
-    for event_start, event_end in truth_events:
-        candidates = [s for s in starts if s not in used and event_start <= s <= event_end]
-        if candidates:
-            first = candidates[0]
-            used.add(first)
-            metrics.truth_events_detected += 1
-            metrics.latencies_min.append((first - event_start).total_seconds() / 60.0)
 
     sample_metrics = binary_metrics(metrics.tp, metrics.fp, metrics.fn, metrics.tn)
     event_recall = metrics.truth_events_detected / metrics.truth_events if metrics.truth_events else float("nan")
     coverage = metrics.global_truth / len(expected_index) if len(expected_index) else float("nan")
+    median_delta = float(np.median(metrics.onset_deltas_min)) if metrics.onset_deltas_min else float("nan")
+    p95_delta = float(np.percentile(metrics.onset_deltas_min, 95)) if metrics.onset_deltas_min else float("nan")
+    median_lead = float(np.median(metrics.lead_times_min)) if metrics.lead_times_min else float("nan")
+
     report = {
         "mode": "causal_live_replay",
         "observatory": args.observatory,
@@ -273,7 +361,9 @@ def main() -> int:
             "global_truth_samples": metrics.global_truth,
             "truth_coverage": coverage,
         },
-        "sample_metrics": {"tp": metrics.tp, "fp": metrics.fp, "fn": metrics.fn, "tn": metrics.tn, **sample_metrics},
+        "sample_metrics": {
+            "tp": metrics.tp, "fp": metrics.fp, "fn": metrics.fn, "tn": metrics.tn, **sample_metrics
+        },
         "events": {
             "truth_events": metrics.truth_events,
             "truth_events_detected": metrics.truth_events_detected,
@@ -281,12 +371,14 @@ def main() -> int:
             "live_event_starts": metrics.events_started,
             "live_event_escalations": metrics.events_escalated,
             "live_event_ends": metrics.events_ended,
-            "detection_latency_min_median": float(np.median(metrics.latencies_min)) if metrics.latencies_min else float("nan"),
-            "detection_latency_min_p95": float(np.percentile(metrics.latencies_min, 95)) if metrics.latencies_min else float("nan"),
+            "matched_onset_delta_min_median": median_delta,
+            "matched_onset_delta_min_p95": p95_delta,
+            "early_warning_lead_min_median": median_lead,
+            "detector_event_intervals": detector_events,
         },
     }
 
-    Path(args.output).write_text(json.dumps(report, indent=2, allow_nan=True))
+    Path(args.output).write_text(json.dumps(report, indent=2, allow_nan=True, default=str))
     print("\n=== Causal Live Replay ===")
     print(f"Expected samples   : {len(expected_index):,}")
     print(f"Unique truth       : {len(truth_index):,}")
@@ -304,8 +396,9 @@ def main() -> int:
     print(f"Truth events       : {metrics.truth_events}")
     print(f"Events detected    : {metrics.truth_events_detected}")
     print(f"Event recall       : {event_recall:.4%}" if metrics.truth_events else "Event recall       : n/a")
-    print(f"Median latency     : {report['events']['detection_latency_min_median']:.2f} min" if metrics.latencies_min else "Median latency     : n/a")
-    print(f"P95 latency        : {report['events']['detection_latency_min_p95']:.2f} min" if metrics.latencies_min else "P95 latency        : n/a")
+    print(f"Median onset delta : {median_delta:.2f} min" if metrics.onset_deltas_min else "Median onset delta : n/a")
+    print(f"P95 onset delta    : {p95_delta:.2f} min" if metrics.onset_deltas_min else "P95 onset delta    : n/a")
+    print(f"Median early lead  : {median_lead:.2f} min" if metrics.lead_times_min else "Median early lead  : n/a")
     print(f"Report written to  : {args.output}")
     return 0
 
