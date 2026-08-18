@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from validate_historical_magnetometer import Aggregator, binary_metrics, global_levels_from_indices
+from magnetometer.validation.validate_historical_magnetometer import Aggregator, binary_metrics, global_levels_from_indices
 
 
 class HistoricalValidationTests(unittest.TestCase):

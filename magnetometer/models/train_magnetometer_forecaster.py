@@ -20,10 +20,10 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-import magnetometer_demo as md
+from magnetometer.demos import magnetometer_demo as md
 from magnetometer.acquisition import fetch_dst_kyoto, fetch_intermagnet_iaga2002, fetch_kp_gfz
 from magnetometer.parsing import parse_iaga2002_to_dataframe
-from models.forecaster import ForecastConfig, GeomagneticForecaster, build_training_data, save_model
+from magnetometer.models.forecaster import ForecastConfig, GeomagneticForecaster, build_training_data, save_model
 
 
 def fetch_inputs(observatory: str, start_date: str, days: int, warmup_days: int):
@@ -318,12 +318,12 @@ def main() -> int:
     if not production_passed:
         print("\nPRODUCTION GATE FAILED: +1h did not meet the minimum deployment evidence. No production artifact was saved.", file=sys.stderr)
         if args.save_candidate:
-            candidate = Path(args.output or f"models/artifacts/candidates/{args.observatory.lower()}_forecaster.pkl")
+            candidate = Path(args.output or f"magnetometer/models/artifacts/candidates/{args.observatory.lower()}_forecaster.pkl")
             save_model(model, candidate)
             print(f"Saved research candidate (NOT production-approved): {candidate}")
         return 3
 
-    output = Path(args.output or f"models/artifacts/{args.observatory.lower()}_forecaster.pkl")
+    output = Path(args.output or f"magnetometer/models/artifacts/{args.observatory.lower()}_forecaster.pkl")
     save_model(model, output)
     print(f"\nPRODUCTION GATE PASSED: approved horizons {approved}")
     print(f"Saved production artifact: {output}")

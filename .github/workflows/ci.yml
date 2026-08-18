@@ -27,29 +27,36 @@ jobs:
 
       - name: Lint
         run: |
-          python -m flake8 magnetometer models tests test_magnetometer_demo.py \
+          python -m flake8 magnetometer \
             test_historical_validation.py test_calibration.py \
-            test_magnetometer_ml.py test_magnetometer_ml_real.py \
-            calibrate_historical_magnetometer.py run_magnetometer.py \
-            train_magnetometer_forecaster.py validate_historical_magnetometer.py \
-            magnetometer_demo.py
+            magnetometer/tests/test_magnetometer_acquisition.py \
+            magnetometer/tests/test_magnetometer_demo.py \
+            magnetometer/models/tests/test_magnetometer_ml.py \
+            magnetometer/models/tests/test_magnetometer_ml_real.py \
+            magnetometer/calibration/calibrate_historical_magnetometer.py \
+            magnetometer/demos/run_magnetometer.py \
+            magnetometer/models/train_magnetometer_forecaster.py \
+            magnetometer/validation/validate_historical_magnetometer.py
 
       - name: Type check
         run: |
-          python -m mypy magnetometer_demo.py calibrate_observatory.py \
+          python -m mypy magnetometer/demos/magnetometer_demo.py calibrate_observatory.py \
             calibrate_thresholds.py tune_thresholds.py validate_periods.py \
-            calibrate_historical_magnetometer.py run_magnetometer.py \
-            validate_historical_magnetometer.py test_magnetometer_demo.py \
+            magnetometer/calibration/calibrate_historical_magnetometer.py \
+            magnetometer/demos/run_magnetometer.py \
+            magnetometer/validation/validate_historical_magnetometer.py \
+            magnetometer/tests/test_magnetometer_demo.py \
             test_historical_validation.py test_calibration.py magnetometer
 
       - name: Offline regression tests
         run: |
-          python test_magnetometer_demo.py
+          python magnetometer/tests/test_magnetometer_demo.py
           python test_historical_validation.py
           python test_calibration.py
-          python test_magnetometer_ml.py
-          python -m unittest test_magnetometer_ml_real.py
-          python -m unittest discover -s tests -p 'test_*.py'
+          python magnetometer/models/tests/test_magnetometer_ml.py
+          python -m unittest magnetometer/models/tests/test_magnetometer_ml_real.py
+          python -m unittest discover -s magnetometer/models/tests -p 'test_*.py'
+          python -m unittest discover -s magnetometer/tests -p 'test_*.py'
 
       - name: CLI import smoke test
-        run: python -c "import magnetometer; import magnetometer_demo; import run_magnetometer; import validate_historical_magnetometer; import calibrate_historical_magnetometer; import models.forecaster"
+        run: python -c "from magnetometer.demos import magnetometer_demo; from magnetometer.demos import run_magnetometer; from magnetometer.validation import validate_historical_magnetometer; from magnetometer.calibration import calibrate_historical_magnetometer; from magnetometer.models import forecaster"

@@ -30,7 +30,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 DEMOS = {
     "magnetometer": {
-        "script": "magnetometer_demo.py",
+        "script": "magnetometer/demos/magnetometer_demo.py",
         "self_test_args": ["--self-test"],
         "real_args": [
             "--fetch-real-data",
@@ -44,7 +44,7 @@ DEMOS = {
             "3",
             "--cross-check-indices",
             "--output-json",
-            "magnetometer_results.json",
+            "magnetometer/results/magnetometer_results.json",
             "--log-format",
             "json",
         ],
@@ -135,7 +135,10 @@ def run_demo(name, args_list, timeout=300, python_exe=None):
         return None, -1, ""
 
     exe = python_exe or sys.executable
-    cmd = [exe, script] + args_list
+    if name == "magnetometer":
+        cmd = [exe, "-m", "magnetometer.demos.magnetometer_demo"] + args_list
+    else:
+        cmd = [exe, script] + args_list
     print(f"\n▶ Running: {' '.join(cmd)}\n")
     start = time.time()
     try:

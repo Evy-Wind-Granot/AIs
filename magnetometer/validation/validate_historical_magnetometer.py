@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
-import magnetometer_demo as md
+from magnetometer.demos import magnetometer_demo as md
 from magnetometer.acquisition import fetch_dst_kyoto, fetch_intermagnet_iaga2002, fetch_kp_gfz
 from magnetometer.parsing import parse_iaga2002_to_dataframe
 
@@ -405,7 +405,7 @@ def main() -> int:
         print(f"{key:20s}: {value:.4%}" if np.isfinite(value) else f"{key:20s}: N/A")
     events = report["results"]["event_level_performance"]
     print(f"Event detection rate: {events['event_detection_rate']:.2%}" if np.isfinite(events["event_detection_rate"]) else "Event detection rate: N/A")
-    print("\nBinary confusion matrix [truth rows x prediction columns]:")
+    print("Binary confusion matrix [truth rows x prediction columns]:")
     for row in report["results"]["binary_confusion_matrix"]["matrix"]:
         print(f"  {row}")
     print(f"\nReport written to: {output}")

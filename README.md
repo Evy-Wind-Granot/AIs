@@ -6,7 +6,7 @@ Three standalone, runnable demos, one per instrument. Each fetches real public d
 |--------------|------------------------------------|------------------------------------------|------------------|
 | Seismometer  | `seismic_demo.py`                  | PhaseNet + EQTransformer (SeisBench)     | EarthScope FDSN  |
 | Weather      | `weather_tsfm_engine_v2_production_hybrid_fixed.py` | Multi-backend TSFM benchmark + forecast | ECCC hourly CSV  |
-| Magnetometer | `magnetometer_demo.py`             | 5-band FIR QDC baseline + activity flags | INTERMAGNET GIN  |
+| Magnetometer | `magnetometer/demos/magnetometer_demo.py` | 5-band FIR QDC baseline + activity flags | INTERMAGNET GIN  |
 
 ---
 
@@ -60,7 +60,7 @@ pip install uni2ts                # Salesforce Moirai 2.0
 
 # 5. Verify installation
 python seismic_demo.py --self-test
-python magnetometer_demo.py --self-test
+python -m magnetometer.demos.magnetometer_demo --self-test
 python weather_tsfm_engine_v2_production_hybrid_fixed.py --mode benchmark --model persistence --station-id 51337 --year 2024 --months 1 --horizon 24
 ```
 
@@ -159,7 +159,7 @@ EQTransformer total unique picks: 11
   EQTransformer P=6, S=5
      P  2024-01-01T09:04:11.659538Z  prob=0.719  (EQTransformer)
      P  2024-01-01T09:08:40.179537Z  prob=0.742  (EQTransformer)
-     P  2024-01-01T09:14:38.089538Z  prob=0.765  (EQTransformer)
+     P  2024-01-01T09:14:38.089537Z  prob=0.765  (EQTransformer)
      S  2024-01-01T09:26:06.319538Z  prob=0.752  (EQTransformer)
      S  2024-01-01T09:28:43.689537Z  prob=0.719  (EQTransformer)
      ... (1 more)
@@ -314,7 +314,7 @@ The weather engine outputs schema-compliant JSON when used in `--mode forecast`.
 ### Self-test (synthetic, fully offline)
 
 ```bash
-python magnetometer_demo.py --self-test
+python -m magnetometer.demos.magnetometer_demo --self-test
 ```
 
 Injects a 6-hour storm depression and a single-sample glitch spike into synthetic data, then recovers both via the 5-band filter baseline.
@@ -322,7 +322,7 @@ Injects a 6-hour storm depression and a single-sample glitch spike into syntheti
 ### Real data — INTERMAGNET Victoria observatory
 
 ```bash
-python magnetometer_demo.py --fetch-real-data --days 7 --start-date 2024-01-01
+python -m magnetometer.demos.magnetometer_demo --fetch-real-data --days 7 --start-date 2024-01-01
 ```
 
 **Example output (real run):**
@@ -349,10 +349,10 @@ Schema messages saved to: vic_magnetometer_schemas.jsonl
 
 ```bash
 # Dry-run
-python magnetometer_demo.py --fetch-real-data --days 1 --start-date 2024-01-01 --emit-schemas > mag_schemas.jsonl
+python -m magnetometer.demos.magnetometer_demo --fetch-real-data --days 1 --start-date 2024-01-01 --emit-schemas > mag_schemas.jsonl
 
 # Analyze from saved schemas
-python magnetometer_demo.py --json-input vic_magnetometer_schemas.jsonl --column x_nt
+python -m magnetometer.demos.magnetometer_demo --json-input vic_magnetometer_schemas.jsonl --column x_nt
 ```
 
 **Schema format (`magnetometer.v1.json`):**

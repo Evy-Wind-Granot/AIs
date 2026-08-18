@@ -9,13 +9,13 @@ from pathlib import Path
 
 import numpy as np
 
-from calibrate_historical_magnetometer import (
+from magnetometer.calibration.calibrate_historical_magnetometer import (
     calibrated_config_from_best,
     candidate_thresholds,
     choose_best,
     score_threshold,
 )
-import magnetometer_demo as md
+from magnetometer.demos import magnetometer_demo as md
 
 
 class CalibrationTests(unittest.TestCase):

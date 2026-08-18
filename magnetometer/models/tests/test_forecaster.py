@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from magnetometer.features import FeatureConfig, build_features, build_targets
-from models.forecaster import ForecastConfig, GeomagneticForecaster, load_model, save_model
+from magnetometer.models.forecaster import ForecastConfig, GeomagneticForecaster, load_model, save_model
 
 
 def _dataset(periods=1400):

@@ -134,18 +134,18 @@ run_magnetometer() {
     banner "MAGNETOMETER DEMO"
     local exit_code=0
     if [[ "$MODE" == "self-test" ]]; then
-        python magnetometer_demo.py --self-test || exit_code=$?
+        python -m magnetometer.demos.magnetometer_demo --self-test || exit_code=$?
     else
         # Use May 2024 (known good data + calibrated storm period)
         # instead of Jan 2024 (70% gaps, triggers quality gate)
-        python magnetometer_demo.py \
+        python -m magnetometer.demos.magnetometer_demo \
             --fetch-real-data \
             --observatory VIC \
             --days 5 \
             --start-date 2024-05-08 \
             --warmup-days 3 \
             --cross-check-indices \
-            --output-json magnetometer_results.json \
+            --output-json magnetometer/results/magnetometer_results.json \
             --log-format json \
             || exit_code=$?
     fi
@@ -223,7 +223,7 @@ for field, backends in moirai.get('benchmark_metrics', {}).items():
 with open('weather_merged_results.json', 'w') as f:
     json.dump(main, f, indent=2)
 
-print('\n' + '='*120)
+print('\\n' + '='*120)
 print(f\"{'field':<14}{'backend':<22}{'params':<8}{'MAE':<10}{'RMSE':<10}{'MASE':<10}{'CRPS':<10}{'ms/call':<10}{'mv':<4}\")
 print('-'*120)
 for feat, backends in main.get('benchmark_metrics', {}).items():
@@ -237,7 +237,7 @@ for feat, backends in main.get('benchmark_metrics', {}).items():
 print('='*120)
 print('MASE < 1.0 beats seasonal-naive. CRPS = probabilistic calibration (lower = better).')
 print('mv = multivariate native. -mv suffix = Toto multivariate on clean sensors.')
-print(\"\n⚠️  NOTE: ECCC data may overlap Chronos/TimesFM pretraining — treat those MASE as optimistic.\n\")
+print(\"\\n⚠️  NOTE: ECCC data may overlap Chronos/TimesFM pretraining — treat those MASE as optimistic.\\n\")
 "
 }
 

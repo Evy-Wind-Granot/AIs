@@ -67,14 +67,14 @@ def _attach_ml_forecast(result: Dict[str, Any], *, cadence_s: float, observatory
         result["forecast"] = {"enabled": False, "status": "data_quality_gate"}
         return result
 
-    default_artifact = Path("models") / "artifacts" / f"{observatory.lower()}_forecaster.pkl"
+    default_artifact = Path(__file__).resolve().parent / "models" / "artifacts" / f"{observatory.lower()}_forecaster.pkl"
     artifact = Path(os.environ.get("MAGNETOMETER_FORECAST_MODEL", str(default_artifact)))
     if not artifact.exists():
         result["forecast"] = {"enabled": False, "status": "model_not_trained", "artifact": str(artifact)}
         return result
 
     try:
-        from models.forecaster import build_training_data, load_model
+        from .models.forecaster import build_training_data, load_model
 
         model = load_model(artifact)
         health = model.health_check()

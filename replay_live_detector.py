@@ -30,7 +30,7 @@ from magnetometer.acquisition import fetch_intermagnet_iaga2002
 from magnetometer.config_strict import load_config
 from magnetometer.live import LiveDetector
 from magnetometer.parsing import parse_iaga2002_to_dataframe
-from validate_historical_magnetometer import align_global_indices, binary_metrics, fetch_global_indices
+from magnetometer.validation.validate_historical_magnetometer import align_global_indices, binary_metrics, fetch_global_indices
 
 STORM_FLAGS = {"minor_storm", "major_storm", "severe_storm"}
 VALID_LEVELS = {"quiet", "unsettled", "active", *STORM_FLAGS}

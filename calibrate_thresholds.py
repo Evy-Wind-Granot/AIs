@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Calibrate the activity thresholds for one observatory and emit its config.
 
-The production defaults in ``magnetometer_demo.py`` were fitted at VIC. Local
+The production defaults in the magnetometer demo module were fitted at VIC. Local
 disturbance amplitude scales with geomagnetic latitude and station noise, so
 the same nT thresholds mean different things at CNB, ABK or HON — running the
 pipeline elsewhere without recalibration is the single largest source of wrong
@@ -47,7 +47,7 @@ _SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
-import magnetometer_demo as md  # noqa: E402
+from magnetometer.demos import magnetometer_demo as md  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -609,7 +609,7 @@ def main() -> int:
     Path(args.out).write_text(text)
     logger.info(f"Wrote {args.observatory} thresholds to {args.out}")
     print(
-        f"\nUse it with:  python magnetometer_demo.py --config {args.out} "
+        f"\nUse it with:  python -m magnetometer.demos.magnetometer_demo --config {args.out} "
         f"--fetch-real-data --observatory {args.observatory} --cross-check-indices"
     )
     return 0

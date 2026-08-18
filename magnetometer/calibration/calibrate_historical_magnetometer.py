@@ -10,6 +10,9 @@ The selected settings are written to JSON in the nested thresholds schema that
 load_config understands, and, when a holdout window is provided, evaluated on
 that unseen period in the same process. Do not use the holdout interval for
 calibration.
+
+The script is intended to live inside the magnetometer package; all imports
+therefore use the package paths rather than historical root-level module names.
 """
 from __future__ import annotations
 
@@ -22,11 +25,11 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-import magnetometer_demo as md
+from magnetometer.demos import magnetometer_demo as md
 from magnetometer.acquisition import fetch_intermagnet_iaga2002
 from magnetometer.parsing import parse_iaga2002_to_dataframe
 from magnetometer.classification import disturbance_amplitude
-from validate_historical_magnetometer import (
+from magnetometer.validation.validate_historical_magnetometer import (
     Aggregator,
     align_global_indices,
     fetch_global_indices,

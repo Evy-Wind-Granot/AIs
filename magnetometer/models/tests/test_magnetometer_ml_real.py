@@ -8,14 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-import magnetometer_demo as md
+from magnetometer.demos import magnetometer_demo as md
 from magnetometer.acquisition import (
     fetch_dst_kyoto,
     fetch_intermagnet_iaga2002,
     fetch_kp_gfz,
 )
 from magnetometer.parsing import parse_iaga2002_to_dataframe
-from models.forecaster import (
+from magnetometer.models.forecaster import (
     ForecastConfig,
     GeomagneticForecaster,
     build_training_data,

@@ -262,7 +262,7 @@ MAGNETOMETER_SCENARIOS: List[Scenario] = [
             "--fetch-real-data", "--observatory", "VIC", "--days", "7",
             "--start-date", "2024-06-15",
         ],
-        script="magnetometer_demo.py",
+        script="magnetometer/demos/magnetometer_demo.py",
     ),
     Scenario(
         instrument="magnetometer",
@@ -276,7 +276,7 @@ MAGNETOMETER_SCENARIOS: List[Scenario] = [
             "--fetch-real-data", "--observatory", "VIC", "--days", "7",
             "--start-date", "2024-03-20",
         ],
-        script="magnetometer_demo.py",
+        script="magnetometer/demos/magnetometer_demo.py",
     ),
     Scenario(
         instrument="magnetometer",
@@ -290,7 +290,7 @@ MAGNETOMETER_SCENARIOS: List[Scenario] = [
             "--fetch-real-data", "--observatory", "VIC", "--days", "3",
             "--start-date", "2024-08-11",
         ],
-        script="magnetometer_demo.py",
+        script="magnetometer/demos/magnetometer_demo.py",
     ),
     Scenario(
         instrument="magnetometer",
@@ -304,7 +304,7 @@ MAGNETOMETER_SCENARIOS: List[Scenario] = [
             "--fetch-real-data", "--observatory", "OTT", "--days", "3",
             "--start-date", "2024-03-23",
         ],
-        script="magnetometer_demo.py",
+        script="magnetometer/demos/magnetometer_demo.py",
     ),
     Scenario(
         instrument="magnetometer",
@@ -318,7 +318,7 @@ MAGNETOMETER_SCENARIOS: List[Scenario] = [
             "--fetch-real-data", "--observatory", "BRW", "--days", "3",
             "--start-date", "2024-05-10",
         ],
-        script="magnetometer_demo.py",
+        script="magnetometer/demos/magnetometer_demo.py",
     ),
 ]
 
@@ -376,7 +376,10 @@ def run_scenario(scenario: Scenario, timeout: int = 600, dry_run: bool = False) 
         print(f"[SKIP] {scenario.script} not found in current directory.")
         return False
 
-    cmd = [sys.executable, scenario.script] + scenario.args
+    if scenario.instrument == "magnetometer":
+        cmd = [sys.executable, "-m", "magnetometer.demos.magnetometer_demo"] + scenario.args
+    else:
+        cmd = [sys.executable, scenario.script] + scenario.args
 
     if dry_run:
         print(f"\n[DRY-RUN] Would execute:")

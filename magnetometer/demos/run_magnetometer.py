@@ -5,12 +5,12 @@ No config file, no --live loop, no JSON/Prometheus output, no state file
 juggling. Just: fetch a window of real INTERMAGNET data (+ Kp/Dst for
 cross-checking), run the classifier, print the numbers.
 
-    python3 run_magnetometer.py --observatory VIC --start-date 2024-05-08 --days 5
+    python3 magnetometer/demos/run_magnetometer.py --observatory VIC --start-date 2024-05-08 --days 5
 
 The runner deliberately keeps acquisition separate from scientific analysis:
 transport, retries, and historical caching live in ``magnetometer.acquisition``;
-IAGA-2002 parsing lives in ``magnetometer.parsing``; and ``magnetometer_demo``
-remains the backwards-compatible analysis API.
+IAGA-2002 parsing lives in ``magnetometer.parsing``; and
+``magnetometer.demos.magnetometer_demo`` provides the analysis API.
 """
 
 import argparse
@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
-import magnetometer_demo as md
+from magnetometer.demos import magnetometer_demo as md
 from magnetometer.acquisition import (
     fetch_dst_kyoto,
     fetch_intermagnet_iaga2002,

@@ -84,7 +84,7 @@ baseline:
 state:
   # Path to JSON file for persisting last-good QDC coefficients.
   # Enables warm restarts without re-fetching warmup data.
-  file: .magnetometer_state.json
+  file: magnetometer/state/.magnetometer_state.json
 
   # Auto-save state after every successful analysis
   auto_save: true

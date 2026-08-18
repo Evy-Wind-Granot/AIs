@@ -23,15 +23,20 @@ logging = ["python-json-logger>=2.0,<5"]
 dev = ["flake8==7.1.1", "mypy==2.3.0"]
 
 [project.scripts]
-magnetometer-pipeline = "magnetometer_demo:main_entry"
+magnetometer-pipeline = "magnetometer.demos.magnetometer_demo:main_entry"
 magnetometer-calibrate = "calibrate_observatory:main"
 
 [tool.setuptools]
 py-modules = [
-    "magnetometer_demo",
     "calibrate_observatory",
     "calibrate_thresholds",
     "tune_thresholds",
     "validate_periods",
 ]
-packages = ["magnetometer"]
+packages = [
+    "magnetometer",
+    "magnetometer.models",
+    "magnetometer.demos",
+    "magnetometer.calibration",
+    "magnetometer.validation",
+]

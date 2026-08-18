@@ -2,8 +2,8 @@
 """Score the production classifier over several storm/quiet periods.
 
 Each period is fetched with the same warmup + cross-check settings the CLI
-uses, so the numbers reported here are exactly what `magnetometer_demo.py`
-would print for that window. Held-out periods are the ones the thresholds
+uses, so the numbers reported here are exactly what the magnetometer demo
+module would print for that window. Held-out periods are the ones the thresholds
 were *not* tuned on.
 
     python3 validate_periods.py [--centered]
@@ -15,7 +15,7 @@ import sys
 
 import pandas as pd
 
-import magnetometer_demo as md
+from magnetometer.demos import magnetometer_demo as md
 
 PERIODS = [
     # (label, start_date, days, kind, tuned_on)

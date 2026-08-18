@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from magnetometer.features import FeatureConfig, build_features, build_targets
-from models.forecaster import (
+from magnetometer.models.forecaster import (
     ForecastConfig,
     GeomagneticForecaster,
     build_training_data,

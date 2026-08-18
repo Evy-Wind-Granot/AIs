@@ -1,6 +1,6 @@
 import unittest
 
-from train_magnetometer_forecaster import _gate_horizon
+from magnetometer.models.train_magnetometer_forecaster import _gate_horizon
 
 
 class ProductionGateTests(unittest.TestCase):

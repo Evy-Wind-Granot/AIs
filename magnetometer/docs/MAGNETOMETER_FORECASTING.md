@@ -68,14 +68,14 @@ This is deliberately stricter than a single train/test benchmark while avoiding 
 
 If +1h fails, training exits with status `3` and leaves the production artifact untouched.
 
-`--save-candidate` can save a failed model under `models/artifacts/candidates/` for research, but the metadata remains `production_gate = failed` and the live pipeline refuses to load it.
+`--save-candidate` can save a failed model under `magnetometer/models/artifacts/candidates/` for research, but the metadata remains `production_gate = failed` and the live pipeline refuses to load it.
 
 ## Train on real VIC data
 
 For a production-quality run, use at least six months when the upstream data sources permit it:
 
 ```bash
-python train_magnetometer_forecaster.py \
+python magnetometer/models/train_magnetometer_forecaster.py \
   --observatory VIC \
   --start-date 2024-01-01 \
   --days 180 \
@@ -94,7 +94,7 @@ The script:
 8. Refits only on train + validation using the selected configuration.
 9. Evaluates the frozen model on multiple contiguous unseen test folds.
 10. Applies the horizon-aware stability gate.
-11. Writes `models/artifacts/<observatory>_forecaster.pkl` only when +1h has earned production status.
+11. Writes `magnetometer/models/artifacts/<observatory>_forecaster.pkl` only when +1h has earned production status.
 
 If Dst is unavailable from Kyoto WDC, training continues without Dst and records that limitation in model metadata. It does not fabricate Dst values.
 
@@ -124,8 +124,8 @@ Forecast artifacts use schema version `3`. Loading requires both a fitted model 
 Offline tests include:
 
 ```bash
-python test_magnetometer_ml.py
-python -m unittest discover -s tests -p 'test_*.py'
+python magnetometer/models/tests/test_magnetometer_ml.py
+python -m unittest discover -s magnetometer/models/tests -p 'test_*.py'
 ```
 
 They cover causal features, Kp/Dst release lags, missing-index signals, strict future targets, persistence-aware model inference, blend calibration, evaluation, production health metadata, serialization safety, hybrid integration, and horizon-aware gate policy.
@@ -133,7 +133,7 @@ They cover causal features, Kp/Dst release lags, missing-index signals, strict f
 Historical upstream-data regression remains opt-in:
 
 ```bash
-RUN_REAL_DATA_TESTS=1 python -m unittest test_magnetometer_ml_real.py
+RUN_REAL_DATA_TESTS=1 python -m unittest magnetometer/models/tests/test_magnetometer_ml_real.py
 ```
 
 It is intentionally not part of CI because INTERMAGNET, GFZ, and Kyoto WDC are external services.
