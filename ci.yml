@@ -34,10 +34,13 @@ jobs:
             calibrate_thresholds.py tune_thresholds.py validate_periods.py \
             test_magnetometer_demo.py
 
-      # The suite is fully offline (synthetic IAGA payloads + injected
-      # failures), so CI never depends on INTERMAGNET/GFZ/Kyoto availability.
+      # Offline unit suites; real upstream-data regression is opt-in and is not
+      # run in CI because INTERMAGNET/GFZ/Kyoto availability is external.
       - name: Tests
-        run: python test_magnetometer_demo.py
+        run: |
+          python test_magnetometer_demo.py
+          python test_magnetometer_ml.py
+          python -m unittest test_magnetometer_ml_real.py
 
       - name: Exit-code contract
         run: |
