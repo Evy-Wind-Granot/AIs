@@ -27,7 +27,7 @@ jobs:
 
       - name: Lint
         run: |
-          python -m flake8 magnetometer models test_magnetometer_demo.py \
+          python -m flake8 magnetometer models tests test_magnetometer_demo.py \
             test_historical_validation.py test_calibration.py \
             test_magnetometer_ml.py test_magnetometer_ml_real.py \
             calibrate_historical_magnetometer.py run_magnetometer.py \
@@ -49,6 +49,7 @@ jobs:
           python test_calibration.py
           python test_magnetometer_ml.py
           python -m unittest test_magnetometer_ml_real.py
+          python -m unittest discover -s tests -p 'test_*.py'
 
       - name: CLI import smoke test
         run: python -c "import magnetometer; import magnetometer_demo; import run_magnetometer; import validate_historical_magnetometer; import calibrate_historical_magnetometer; import models.forecaster"
