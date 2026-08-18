@@ -8,7 +8,7 @@ legacy public call surface remains available.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import numpy as np
 
@@ -62,17 +62,11 @@ def cross_validate_flags(local_flags, dst_vals, kp_vals):
     return _classification.cross_validate_flags(local_flags, dst_vals, kp_vals)
 
 
-def _attach_ml_forecast(result: Dict[str, Any], cadence_s: float, observatory: str) -> Dict[str, Any]:
-    """Attach forecasts when a compatible trained artifact is available.
-
-    The ML layer is intentionally fail-safe: absence/corruption of an artifact
-    never changes the deterministic classification result or makes monitoring
-    fail.  The artifact path is configurable through the
-    ``MAGNETOMETER_FORECAST_MODEL`` environment variable; otherwise the
-    conventional per-observatory path under ``models/artifacts`` is used.
-    """
+def _attach_ml_forecast(result: Dict[str, Any], *, cadence_s: float, observatory: str,
+                        start_time: Any, analysis_start_time: Any,
+                        kp_series: Any, dst_series: Any) -> Dict[str, Any]:
+    """Attach a fail-safe short-horizon ML forecast to a deterministic result."""
     import os
-    from datetime import datetime, timezone
     import pandas as pd
 
     result["forecast"] = {"enabled": False, "status": "unavailable"}
@@ -95,52 +89,57 @@ def _attach_ml_forecast(result: Dict[str, Any], cadence_s: float, observatory: s
 
         model = load_model(artifact)
         residual = np.asarray(result.get("residual"), dtype=float)
-        start = result.get("analysis_start_time") or result.get("start_time")
-        if start is None:
-            # The legacy result does not always expose the timestamp, so use a
-            # stable synthetic index only as a last-resort shape-preserving path.
-            index = pd.date_range(
-                datetime(1970, 1, 1, tzinfo=timezone.utc),
-                periods=len(residual),
-                freq=pd.Timedelta(seconds=cadence_s),
-            )
-        else:
-            index = pd.date_range(
-                pd.to_datetime(start, utc=True),
-                periods=len(residual),
-                freq=pd.Timedelta(seconds=cadence_s),
-            )
-        kp = result.get("kp")
-        dst = result.get("dst")
-        kp_series = pd.Series(np.asarray(kp, dtype=float), index=index) if kp is not None else None
-        dst_series = pd.Series(np.asarray(dst, dtype=float), index=index) if dst is not None else None
+        anchor = analysis_start_time if analysis_start_time is not None else start_time
+        if anchor is None:
+            raise ValueError("inference requires start_time or analysis_start_time")
+        index = pd.date_range(
+            pd.to_datetime(anchor, utc=True),
+            periods=len(residual),
+            freq=pd.Timedelta(seconds=cadence_s),
+        )
         residual_series = pd.Series(residual, index=index)
+
+        def align(source: Any) -> pd.Series | None:
+            if source is None:
+                return None
+            if isinstance(source, pd.Series):
+                src = source.astype(float).copy()
+                src.index = pd.DatetimeIndex(pd.to_datetime(src.index, utc=True))
+                return src.reindex(index, method="ffill")
+            values = np.asarray(source, dtype=float)
+            if len(values) == len(residual):
+                return pd.Series(values, index=index)
+            return None
+
+        kp = align(kp_series)
+        dst = align(dst_series)
         features, _ = build_training_data(
             residual_series,
-            kp_series,
-            dst_series,
+            kp,
+            dst,
             cadence_s=cadence_s,
             config=model.config,
         )
         forecasts = model.predict(features)
 
         levels = ("quiet", "unsettled", "active", "minor_storm", "major_storm", "severe_storm")
-        current = str(np.asarray(result.get("flags"), dtype=object)[-1]) if len(result.get("flags", [])) else "unknown"
+        flags = np.asarray(result.get("flags", []), dtype=object)
+        current = str(flags[-1]) if len(flags) else "unknown"
         current_rank = levels.index(current) if current in levels else -1
-        peak_delta = 0
+        max_delta = 0
         for forecast in forecasts.values():
-            rank = levels.index(forecast["predicted_tier"])
-            peak_delta = max(peak_delta, rank - current_rank)
+            max_delta = max(max_delta, levels.index(forecast["predicted_tier"]) - current_rank)
+
         result["forecast"] = {
             "enabled": True,
             "status": "ok",
             "artifact": str(artifact),
             "horizons": {str(k): v for k, v in forecasts.items()},
             "current_tier": current,
-            "max_tier_delta": int(peak_delta),
-            "early_warning": bool(peak_delta >= 2),
+            "max_tier_delta": int(max_delta),
+            "early_warning": bool(max_delta >= 2),
         }
-    except Exception as exc:  # pragma: no cover - exercised by deployment failures
+    except Exception as exc:  # pragma: no cover - deployment failure path
         _legacy.logger.exception("ML forecast unavailable; deterministic result retained")
         result["forecast"] = {
             "enabled": False,
@@ -152,16 +151,23 @@ def _attach_ml_forecast(result: Dict[str, Any], cadence_s: float, observatory: s
 
 
 def run_analysis(*args, **kwargs):
-    """Run the deterministic pipeline, then attach optional ML forecasts."""
+    """Run deterministic analysis and append optional ML forecasts."""
     result = _legacy.run_analysis(*args, **kwargs)
     cadence_s = float(args[1] if len(args) > 1 else kwargs.get("cadence_s", 60.0))
-    observatory = str(kwargs.get("observatory", "-"))
-    return _attach_ml_forecast(result, cadence_s, observatory)
+    return _attach_ml_forecast(
+        result,
+        cadence_s=cadence_s,
+        observatory=str(kwargs.get("observatory", "-")),
+        start_time=kwargs.get("start_time"),
+        analysis_start_time=kwargs.get("analysis_start_time"),
+        kp_series=kwargs.get("kp_series"),
+        dst_series=kwargs.get("dst_series"),
+    )
 
 
-# Make the legacy module's internal run_loop/run_cli use the same wrapper. This
-# preserves the existing CLI and live loop while adding the ML layer after each
-# completed deterministic analysis.
+# Internal legacy functions resolve run_analysis by module global lookup. Point
+# that lookup at this wrapper so existing live/batch loops get the same hybrid
+# behavior without changing their public call signatures.
 _legacy.run_analysis = run_analysis
 _legacy.disturbance_amplitude = disturbance_amplitude
 _legacy.flag_activity = flag_activity
