@@ -2,9 +2,9 @@
 """Train, backtest and gate the production geomagnetic forecaster.
 
 The protocol is strictly chronological and deliberately harder than a single
-train/test split.  Model selection and blend calibration use validation data
-only.  Production performance is then measured on multiple contiguous,
-unseen walk-forward test windows.  A model is published only when its
+train/test split. Model-family selection and blend calibration use validation
+data only. Production performance is then measured on multiple contiguous,
+unseen walk-forward test windows. A model is published only when its
 performance is positive in aggregate, stable across folds, and does not show
 a material RMSE regression against persistence.
 """
@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -116,6 +117,88 @@ def _metric_pair(
     return model_mae, model_rmse, base_mae, base_rmse
 
 
+def _evaluate_improvements(
+    model: GeomagneticForecaster,
+    features: pd.DataFrame,
+    targets: dict[int, pd.Series],
+    baseline: np.ndarray,
+) -> tuple[dict[int, float], dict[int, float]]:
+    """Return MAE/RMSE improvements without printing candidate diagnostics."""
+    X = model._prepare_X(features, model.feature_columns)
+    mae_improvements: dict[int, float] = {}
+    rmse_improvements: dict[int, float] = {}
+    for horizon in model.config.horizons_hours:
+        target = targets[horizon].to_numpy(dtype=float)
+        prediction = model._blended_predictions(X, horizon)
+        model_mae, model_rmse, base_mae, base_rmse = _metric_pair(target, prediction, baseline)
+        mae_improvements[horizon] = 100.0 * (base_mae - model_mae) / base_mae if base_mae > 0 else 0.0
+        rmse_improvements[horizon] = 100.0 * (base_rmse - model_rmse) / base_rmse if base_rmse > 0 else 0.0
+    return mae_improvements, rmse_improvements
+
+
+def _select_validation_model(
+    base_config: ForecastConfig,
+    train_features: pd.DataFrame,
+    train_targets: dict[int, pd.Series],
+    validation_features: pd.DataFrame,
+    validation_targets: dict[int, pd.Series],
+    validation_baseline: np.ndarray,
+    requested_loss: str,
+) -> tuple[GeomagneticForecaster, dict[str, object]]:
+    """Select model hyperparameters using validation data only.
+
+    The final test set is never consulted here. Selection emphasizes the
+    weakest horizon by maximizing the minimum horizon score, which prevents a
+    strong +1h result from hiding an unstable +6h model.
+    """
+    if requested_loss != "auto":
+        losses = (requested_loss,)
+    else:
+        losses = ("absolute_error", "huber", "squared_error")
+
+    candidates: list[ForecastConfig] = []
+    for loss in losses:
+        candidates.extend(
+            [
+                replace(base_config, regression_loss=loss, learning_rate=0.05, max_leaf_nodes=31, min_samples_leaf=30, l2_regularization=1.0),
+                replace(base_config, regression_loss=loss, learning_rate=0.03, max_leaf_nodes=31, min_samples_leaf=20, l2_regularization=2.0),
+            ]
+        )
+
+    best: GeomagneticForecaster | None = None
+    best_info: dict[str, object] | None = None
+    best_score = -float("inf")
+
+    for candidate in candidates:
+        model = GeomagneticForecaster(candidate).fit(train_features, train_targets)
+        weights = model.calibrate_blend(validation_features, validation_targets)
+        mae, rmse = _evaluate_improvements(model, validation_features, validation_targets, validation_baseline)
+        horizon_scores = {
+            h: 0.5 * mae[h] + 0.5 * rmse[h] for h in candidate.horizons_hours
+        }
+        worst_horizon_score = min(horizon_scores.values())
+        mean_score = float(np.mean(list(horizon_scores.values())))
+        score = worst_horizon_score + 0.05 * mean_score
+        if score > best_score:
+            best_score = score
+            best = model
+            best_info = {
+                "regression_loss": candidate.regression_loss,
+                "learning_rate": candidate.learning_rate,
+                "max_leaf_nodes": candidate.max_leaf_nodes,
+                "min_samples_leaf": candidate.min_samples_leaf,
+                "l2_regularization": candidate.l2_regularization,
+                "validation_blend_weights": {str(k): float(v) for k, v in weights.items()},
+                "validation_mae_improvement_percent": {str(k): float(v) for k, v in mae.items()},
+                "validation_rmse_improvement_percent": {str(k): float(v) for k, v in rmse.items()},
+                "selection_score": float(score),
+            }
+
+    if best is None or best_info is None:
+        raise RuntimeError("validation model selection produced no candidate")
+    return best, best_info
+
+
 def _print_metrics(
     name: str,
     model: GeomagneticForecaster,
@@ -128,13 +211,11 @@ def _print_metrics(
     mae_improvements: dict[int, float] = {}
     rmse_improvements: dict[int, float] = {}
     print(f"\n{name}:")
+    X = model._prepare_X(features, model.feature_columns)
     for horizon, evaluation in evaluations.items():
         target = targets[horizon].to_numpy(dtype=float)
-        # model.evaluate and the baseline use the exact same target timestamps.
         model_mae, model_rmse, baseline_mae, baseline_rmse = _metric_pair(
-            target,
-            model._blended_predictions(model._prepare_X(features, model.feature_columns), horizon),
-            baseline,
+            target, model._blended_predictions(X, horizon), baseline
         )
         mae_improvement = 100.0 * (baseline_mae - model_mae) / baseline_mae if baseline_mae > 0 else 0.0
         rmse_improvement = 100.0 * (baseline_rmse - model_rmse) / baseline_rmse if baseline_rmse > 0 else 0.0
@@ -158,13 +239,7 @@ def _evaluate_backtest_stability(
     folds: int,
     amplitude_window_samples: int,
 ) -> dict[int, dict[str, float]]:
-    """Evaluate the frozen model on multiple contiguous unseen test windows.
-
-    No weights, thresholds, hyperparameters, or feature choices are changed
-    using these windows.  This is intentionally a stability check, not another
-    model-selection stage.  The gate uses aggregate and per-fold results so a
-    lucky quiet/stormy final period cannot determine production readiness.
-    """
+    """Evaluate the frozen model on multiple contiguous unseen test windows."""
     if folds < 2:
         raise ValueError("backtest folds must be at least 2")
     if len(features) < folds * 500:
@@ -179,9 +254,7 @@ def _evaluate_backtest_stability(
         fold_features = features.iloc[start:end]
         fold_targets = {h: y.iloc[start:end] for h, y in targets.items()}
         baseline = _persistence_amplitude(
-            residual,
-            fold_features.index,
-            amplitude_window_samples=amplitude_window_samples,
+            residual, fold_features.index, amplitude_window_samples=amplitude_window_samples
         )
         X = model._prepare_X(fold_features, model.feature_columns)
         for horizon in model.config.horizons_hours:
@@ -192,8 +265,7 @@ def _evaluate_backtest_stability(
             rmse_imp = 100.0 * (base_rmse - model_rmse) / base_rmse if base_rmse > 0 else 0.0
             by_horizon[horizon].append((mae_imp, rmse_imp))
             print(
-                f"  fold {fold + 1}/{folds} +{horizon}h: "
-                f"MAE {mae_imp:+.1f}%, RMSE {rmse_imp:+.1f}% "
+                f"  fold {fold + 1}/{folds} +{horizon}h: MAE {mae_imp:+.1f}%, RMSE {rmse_imp:+.1f}% "
                 f"({fold_features.index.min().date()} -> {fold_features.index.max().date()})"
             )
 
@@ -227,11 +299,12 @@ def main() -> int:
     parser.add_argument("--warmup-days", type=int, default=3)
     parser.add_argument("--column", default="x_nt")
     parser.add_argument("--output", default=None)
+    parser.add_argument("--backtest-folds", type=int, default=4)
     parser.add_argument(
-        "--backtest-folds",
-        type=int,
-        default=4,
-        help="number of contiguous unseen folds used for the final stability gate",
+        "--model-loss",
+        choices=("auto", "absolute_error", "huber", "squared_error"),
+        default="auto",
+        help="validation-selected regression loss; auto compares robust and squared losses",
     )
     parser.add_argument(
         "--save-candidate",
@@ -249,14 +322,11 @@ def main() -> int:
         parser.error(f"magnetometer column {args.column!r} is unavailable; available columns: {list(mag.columns)}")
 
     result = md.run_analysis(
-        mag[args.column].to_numpy(),
-        60.0,
+        mag[args.column].to_numpy(), 60.0,
         label=f"{args.observatory} ML training {args.start_date}+{args.days}d",
         start_time=mag.index.min().to_pydatetime(),
         analysis_start_time=analysis_start.to_pydatetime(),
-        dst_series=dst,
-        kp_series=kp,
-        observatory=args.observatory,
+        dst_series=dst, kp_series=kp, observatory=args.observatory,
     )
     if result["status"] != "ok":
         print(f"Training aborted: deterministic quality gate returned {result['status']}", file=sys.stderr)
@@ -281,80 +351,68 @@ def main() -> int:
     max_target_reach_hours = max(config.horizons_hours) + config.amplitude_window_min / 60.0
     purge_samples = int(round(max_target_reach_hours * 3600.0 / 60.0))
     (
-        train_features,
-        train_targets,
-        validation_features,
-        validation_targets,
-        test_features,
-        test_targets,
+        train_features, train_targets,
+        validation_features, validation_targets,
+        test_features, test_targets,
     ) = _purged_three_way_split(features, targets, purge_samples=purge_samples)
     print(
         f"Training samples: {len(train_features)}; validation: {len(validation_features)}; "
         f"test: {len(test_features)}; purge: {purge_samples} samples ({max_target_reach_hours:.1f}h)"
     )
 
-    validation_model = GeomagneticForecaster(config).fit(train_features, train_targets)
-    validation_weights = validation_model.calibrate_blend(validation_features, validation_targets)
     validation_baseline = _persistence_amplitude(
-        residual,
-        validation_features.index,
+        residual, validation_features.index,
         amplitude_window_samples=int(round(config.amplitude_window_min * 60.0 / 60.0)),
     )
-    validation_improvements, validation_rmse, _ = _print_metrics(
-        "Chronological validation",
-        validation_model,
-        validation_features,
-        validation_targets,
-        validation_baseline,
+    validation_model, selection = _select_validation_model(
+        config, train_features, train_targets, validation_features, validation_targets,
+        validation_baseline, args.model_loss,
     )
+    validation_weights = dict(validation_model.blend_weights)
+    validation_improvements, validation_rmse, _ = _print_metrics(
+        "Chronological validation (selected model)",
+        validation_model, validation_features, validation_targets, validation_baseline,
+    )
+    print("  Selected model:", selection)
     print("  Validation blend weights:", ", ".join(f"+{h}h={w:.2f}" for h, w in validation_weights.items()))
 
     final_train_features = pd.concat([train_features, validation_features])
     final_train_targets = {h: pd.concat([train_targets[h], validation_targets[h]]) for h in targets}
-    final_model = GeomagneticForecaster(config).fit(final_train_features, final_train_targets)
+    final_config = replace(config, **{
+        "regression_loss": str(selection["regression_loss"]),
+        "learning_rate": float(selection["learning_rate"]),
+        "max_leaf_nodes": int(selection["max_leaf_nodes"]),
+        "min_samples_leaf": int(selection["min_samples_leaf"]),
+        "l2_regularization": float(selection["l2_regularization"]),
+    })
+    final_model = GeomagneticForecaster(final_config).fit(final_train_features, final_train_targets)
     final_model.blend_weights = dict(validation_weights)
     final_model.training_metadata["blend_weights"] = {str(k): float(v) for k, v in validation_weights.items()}
+    final_model.training_metadata["validation_model_selection"] = selection
 
     test_baseline = _persistence_amplitude(
-        residual,
-        test_features.index,
+        residual, test_features.index,
         amplitude_window_samples=int(round(config.amplitude_window_min * 60.0 / 60.0)),
     )
     test_improvements, test_rmse, test_evaluations = _print_metrics(
-        "Final chronological test",
-        final_model,
-        test_features,
-        test_targets,
-        test_baseline,
+        "Final chronological test", final_model, test_features, test_targets, test_baseline
     )
 
     stability = _evaluate_backtest_stability(
-        final_model,
-        test_features,
-        test_targets,
-        residual,
+        final_model, test_features, test_targets, residual,
         folds=args.backtest_folds,
         amplitude_window_samples=int(round(config.amplitude_window_min * 60.0 / 60.0)),
     )
 
-    # Production gate: validation safety + aggregate unseen performance +
-    # multi-window stability.  No test result is used to select parameters.
     failed: list[int] = []
-    for horizon in config.horizons_hours:
+    for horizon in final_config.horizons_hours:
         s = stability[horizon]
-        if validation_improvements[horizon] < -2.0:
-            failed.append(horizon)
-            continue
-        if validation_rmse[horizon] < -2.0:
+        if validation_improvements[horizon] < -2.0 or validation_rmse[horizon] < -2.0:
             failed.append(horizon)
             continue
         if test_improvements[horizon] <= 0.0 or test_rmse[horizon] < -2.0:
             failed.append(horizon)
             continue
-        # A horizon is not production-ready because of one favourable final
-        # period.  Require positive aggregate/median performance and at least
-        # 75% positive chronological folds, while allowing no fold to regress
-        # by more than 5% MAE or 5% RMSE.
         if (
             s["mean_mae_improvement_percent"] <= 0.0
             or s["median_mae_improvement_percent"] <= 0.0
