@@ -22,19 +22,18 @@ REPO_ROOT = HERE.parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from detector_core import detect_activity_masks  # noqa: E402
-from magnetometer_demo import (  # noqa: E402
+from causal_baseline import compute_causal_qdc_baseline
+from detector_core import detect_activity_masks
+from magnetometer_demo import (
     PROD_ACTIVE_NT,
     PROD_MAJOR_STORM_NT,
     PROD_MINOR_STORM_NT,
     PROD_SEVERE_STORM_NT,
     PROD_UNSETTLED_NT,
-    build_design_matrix,
     fetch_dst_kyoto,
     fetch_intermagnet_iaga2002,
     fetch_kp_gfz,
     parse_iaga2002_to_dataframe,
-    robust_harmonic_baseline,
 )
 
 
@@ -74,26 +73,15 @@ def binary_metrics_from_counts(tp: int, tn: int, fp: int, fn: int) -> Dict[str, 
 
 
 def compute_qdc_baseline(x: np.ndarray, cadence_s: float) -> Tuple[np.ndarray, np.ndarray]:
-    x = np.asarray(x, dtype=float); n = len(x); baseline = np.zeros(n, dtype=float); weights = np.zeros(n, dtype=float); window_samples = max(1, int(24 * 3600 / cadence_s)); step_samples = max(1, window_samples // 2); t_global = np.arange(n, dtype=float) * cadence_s / 3600.0; t_min = float(t_global.min()) if n else 0.0; t_max = float(t_global.max()) if n else 0.0; last_good_coeffs = None
-    for start in range(0, max(1, n - step_samples), step_samples):
-        end = min(start + window_samples, n)
-        if end - start < step_samples // 2: break
-        segment = x[start:end]; t_seg = t_global[start:end]
-        if np.isfinite(segment).sum() < (end - start) * 0.5: continue
-        seg_base, coeffs = robust_harmonic_baseline(segment, cadence_s, t_hours=t_seg, t_ref_min=t_min, t_ref_max=t_max); seg_res = segment - seg_base; storm_frac = float(np.mean(np.abs(seg_res) > 50.0))
-        if storm_frac > 0.05 and last_good_coeffs is not None: seg_base = build_design_matrix(t_seg, t_min, t_max) @ last_good_coeffs
-        elif storm_frac <= 0.05: last_good_coeffs = coeffs
-        w = np.hanning(end - start); baseline[start:end] += seg_base * w; weights[start:end] += w
-    mask = weights > 0; fallback = float(np.median(finite(x))) if finite(x).size else 0.0; baseline[mask] /= weights[mask]; baseline[~mask] = fallback
-    return baseline, x - baseline
+    """Compatibility wrapper for the shared strictly-causal baseline."""
+    return compute_causal_qdc_baseline(x, cadence_s)
 
 
 def reference_masks(kp: pd.Series, dst: pd.Series) -> Dict[str, np.ndarray]:
     """Build independent environmental reference labels.
 
-    NOAA's geomagnetic storm scale defines G1/minor storm conditions at Kp=5.
-    Kp 3-4 is retained as the locally 'active' class; Kp>=5 is storm.
-    Dst provides an independent disturbance reference when available.
+    Kp 3-4 is active and Kp 5+ is geomagnetic-storm (G1+). Dst supplies an
+    independent disturbance reference when available.
     """
     kp_values = kp.to_numpy(dtype=float); dst_values = dst.to_numpy(dtype=float)
     kp_known = np.isfinite(kp_values); dst_known = np.isfinite(dst_values); known = kp_known | dst_known
