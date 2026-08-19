@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Deterministic, strictly-causal production detector.
 
-The detector is shared by the live/demo and certification paths.  It is
-intentionally non-ML and uses only the current sample plus historical data.
-No centered windows, future samples, or full-window statistics are used.
-Calibration supplies thresholds; the held-out final-test period is never used
-for detector parameter selection.
+The detector is shared by live/demo and certification paths.  It uses only the
+current sample and trailing historical data.  It deliberately avoids centered
+windows, future samples, retroactive gap filling, and full-window statistics.
+
+The detector is conservative by design:
+* short excursions cannot create storms;
+* storm evidence requires corroboration across time scales;
+* established states have hysteresis for stability;
+* startup is explicitly unready until all required trailing windows exist;
+* missing samples never become positive detections;
+* severity levels are nested and mutually ordered.
 """
 from __future__ import annotations
 
@@ -49,9 +55,12 @@ def _hysteresis_mask(
     min_on: int,
     min_off: int,
 ) -> np.ndarray:
-    """Apply confirmation/release hysteresis without looking ahead."""
+    """Apply online confirmation/release hysteresis without look-ahead."""
     on = np.asarray(evidence_on, dtype=bool)
     off = np.asarray(evidence_off, dtype=bool)
+    if on.shape != off.shape:
+        raise ValueError("evidence_on and evidence_off must have identical shapes")
+
     n = len(on)
     out = np.zeros(n, dtype=bool)
     state = False
@@ -80,33 +89,33 @@ def _hysteresis_mask(
     return out
 
 
-def _bridge_short_false_runs(mask: np.ndarray, max_gap: int) -> np.ndarray:
-    """Bridge short gaps only after an event is established."""
-    out = np.asarray(mask, dtype=bool).copy()
-    if max_gap <= 0 or out.size < 3:
-        return out
-    false_idx = np.flatnonzero(~out)
-    if false_idx.size == 0:
-        return out
-    starts = false_idx[np.r_[True, np.diff(false_idx) > 1]]
-    ends = false_idx[np.r_[np.diff(false_idx) > 1, True]]
-    for s, e in zip(starts, ends):
-        if s > 0 and e < len(out) - 1 and (e - s + 1) <= max_gap:
-            out[s:e + 1] = True
-    return out
-
-
-def _causal_anomaly_mask(x: np.ndarray, cadence_s: float) -> Tuple[np.ndarray, float, np.ndarray]:
+def _causal_anomaly_mask(
+    x: np.ndarray, cadence_s: float
+) -> Tuple[np.ndarray, float, np.ndarray]:
     """Detect abrupt telemetry steps using historical robust statistics only."""
     diff = np.diff(x, prepend=np.nan)
     w = _window(3 * 3600, cadence_s, 721)
     d = pd.Series(diff, dtype=float)
     med = d.rolling(w, min_periods=w).median()
     mad = (d - med).abs().rolling(w, min_periods=w).median()
-    threshold = np.maximum(DEFAULT_ANOMALY_DELTA_NT, 8.0 * 1.4826 * mad.to_numpy(dtype=float))
+    threshold = np.maximum(
+        DEFAULT_ANOMALY_DELTA_NT,
+        8.0 * 1.4826 * mad.to_numpy(dtype=float),
+    )
     threshold[~np.isfinite(threshold)] = DEFAULT_ANOMALY_DELTA_NT
-    anomaly = np.isfinite(diff) & (np.abs(diff - med.to_numpy(dtype=float)) >= threshold)
-    return anomaly, float(np.nanmedian(threshold)), threshold
+    med_values = med.to_numpy(dtype=float)
+    anomaly = (
+        np.isfinite(diff)
+        & np.isfinite(med_values)
+        & (np.abs(diff - med_values) >= threshold)
+    )
+    finite_threshold = threshold[np.isfinite(threshold)]
+    median_threshold = (
+        float(np.median(finite_threshold))
+        if finite_threshold.size
+        else DEFAULT_ANOMALY_DELTA_NT
+    )
+    return anomaly, median_threshold, threshold
 
 
 def detect_activity_masks(
@@ -120,80 +129,142 @@ def detect_activity_masks(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Return strictly-causal activity/severity masks and diagnostics.
 
-    Every rolling feature is trailing/causal.  The first samples that do not
-    have enough history remain unclassified rather than being evaluated with
-    partial future-free windows, which makes startup behavior explicit.
+    All rolling features are trailing.  No output at time ``t`` depends on a
+    sample after ``t``.  The detector does not retroactively bridge gaps: an
+    online consumer must never have an already-emitted label changed by future
+    observations.
     """
     x = np.asarray(residual, dtype=float)
+    if x.ndim != 1:
+        raise ValueError("residual must be a one-dimensional array")
+    if cadence_s <= 0 or not np.isfinite(cadence_s):
+        raise ValueError("cadence_s must be a positive finite number")
+    if active_threshold <= 0 or storm_threshold <= 0:
+        raise ValueError("activity thresholds must be positive")
+    if not (active_threshold < storm_threshold <= major_threshold <= severe_threshold):
+        raise ValueError(
+            "thresholds must satisfy active < storm <= major <= severe"
+        )
+
     magnitude = np.abs(x)
     valid = np.isfinite(magnitude)
     safe = np.where(valid, magnitude, np.nan)
 
     fast = _rolling_median(safe, _window(5 * 60, cadence_s, 31))
     medium = _rolling_median(safe, _window(15 * 60, cadence_s, 61))
-    upper_30m = _rolling_quantile(safe, _window(30 * 60, cadence_s, 121), 0.75)
+    upper_30m = _rolling_quantile(
+        safe, _window(30 * 60, cadence_s, 121), 0.75
+    )
     slow = _rolling_median(safe, _window(60 * 60, cadence_s, 181))
     slow_3h = _rolling_median(safe, _window(3 * 3600, cadence_s, 361))
 
     arrays = (fast, medium, upper_30m, slow, slow_3h)
-    history_ready = np.isfinite(fast) & np.isfinite(medium) & np.isfinite(upper_30m) & np.isfinite(slow) & np.isfinite(slow_3h)
+    history_ready = (
+        np.isfinite(fast)
+        & np.isfinite(medium)
+        & np.isfinite(upper_30m)
+        & np.isfinite(slow)
+        & np.isfinite(slow_3h)
+        & valid
+    )
     for arr in arrays:
         arr[~np.isfinite(arr)] = 0.0
 
+    # Activity can be supported by sustained moderate residuals or a strong
+    # short excursion with corroborating medium-term energy.
     active_evidence = history_ready & (
         (medium >= active_threshold)
-        | ((slow >= 0.70 * active_threshold) & (medium >= 0.55 * active_threshold))
-        | ((slow_3h >= 0.55 * active_threshold) & (medium >= 0.50 * active_threshold))
-        | ((upper_30m >= 1.10 * active_threshold) & (medium >= 0.50 * active_threshold))
-        | ((fast >= 1.35 * active_threshold) & (medium >= 0.50 * active_threshold))
+        | (
+            (slow >= 0.70 * active_threshold)
+            & (medium >= 0.55 * active_threshold)
+        )
+        | (
+            (slow_3h >= 0.55 * active_threshold)
+            & (medium >= 0.50 * active_threshold)
+        )
+        | (
+            (upper_30m >= 1.10 * active_threshold)
+            & (medium >= 0.50 * active_threshold)
+        )
+        | (
+            (fast >= 1.35 * active_threshold)
+            & (medium >= 0.50 * active_threshold)
+        )
     )
 
-    # Storm qualification is intentionally stricter than activity.  A single
-    # high sample/window cannot create a storm; amplitude must have corroborating
-    # persistence or multi-timescale support.
+    # Storm classification is deliberately stricter.  Long-context features
+    # may corroborate a storm, but may not turn a merely active (~20-30 nT)
+    # disturbance into a storm by themselves.  This substantially reduces
+    # persistent false storm events caused by baseline/model drift.
     storm_evidence = history_ready & (
         (medium >= storm_threshold)
-        | ((slow >= 0.70 * storm_threshold) & (medium >= 0.70 * storm_threshold))
-        | ((slow_3h >= 0.60 * storm_threshold) & (medium >= 0.65 * storm_threshold))
-        | ((upper_30m >= 1.00 * storm_threshold) & (medium >= 0.60 * storm_threshold))
-        | ((fast >= 1.35 * storm_threshold) & (medium >= 0.60 * storm_threshold))
+        | (
+            (fast >= 1.25 * storm_threshold)
+            & (medium >= 0.80 * storm_threshold)
+        )
+        | (
+            (upper_30m >= storm_threshold)
+            & (medium >= 0.80 * storm_threshold)
+        )
+        | (
+            (slow >= storm_threshold)
+            & (medium >= 0.80 * storm_threshold)
+        )
+        | (
+            (slow_3h >= storm_threshold)
+            & (medium >= 0.80 * storm_threshold)
+        )
     )
 
     active = _hysteresis_mask(
         active_evidence,
         history_ready & (medium <= 0.70 * active_threshold),
-        max(1, int(round(5 * 60 / max(cadence_s, 1.0)))),
-        max(1, int(round(30 * 60 / max(cadence_s, 1.0)))),
+        max(1, int(round(5 * 60 / cadence_s))),
+        max(1, int(round(30 * 60 / cadence_s))),
     )
+
     storm = _hysteresis_mask(
         storm_evidence,
         history_ready & (medium <= 0.65 * storm_threshold),
-        max(1, int(round(10 * 60 / max(cadence_s, 1.0)))),
-        max(1, int(round(45 * 60 / max(cadence_s, 1.0)))),
+        max(1, int(round(10 * 60 / cadence_s))),
+        max(1, int(round(20 * 60 / cadence_s))),
     )
-    storm = _bridge_short_false_runs(storm, max(1, int(round(15 * 60 / max(cadence_s, 1.0)))))
 
     major_evidence = history_ready & (
         (medium >= major_threshold)
-        | ((upper_30m >= 0.90 * major_threshold) & (medium >= 0.70 * major_threshold))
-        | ((fast >= 1.15 * major_threshold) & (medium >= 0.70 * major_threshold))
+        | (
+            (upper_30m >= 0.90 * major_threshold)
+            & (medium >= 0.80 * major_threshold)
+        )
+        | (
+            (fast >= 1.15 * major_threshold)
+            & (medium >= 0.80 * major_threshold)
+        )
     )
     severe_evidence = history_ready & (
         (medium >= severe_threshold)
-        | ((upper_30m >= 0.90 * severe_threshold) & (medium >= 0.70 * severe_threshold))
-        | ((fast >= 1.10 * severe_threshold) & (medium >= 0.70 * severe_threshold))
+        | (
+            (upper_30m >= 0.90 * severe_threshold)
+            & (medium >= 0.80 * severe_threshold)
+        )
+        | (
+            (fast >= 1.10 * severe_threshold)
+            & (medium >= 0.80 * severe_threshold)
+        )
     )
+
     major = _hysteresis_mask(
         major_evidence,
         history_ready & (medium <= 0.75 * major_threshold),
-        max(1, int(round(10 * 60 / max(cadence_s, 1.0)))),
-        max(1, int(round(45 * 60 / max(cadence_s, 1.0)))),
+        max(1, int(round(10 * 60 / cadence_s))),
+        max(1, int(round(30 * 60 / cadence_s))),
     ) & storm
+
     severe = _hysteresis_mask(
         severe_evidence,
         history_ready & (medium <= 0.75 * severe_threshold),
-        max(1, int(round(10 * 60 / max(cadence_s, 1.0)))),
-        max(1, int(round(45 * 60 / max(cadence_s, 1.0)))),
+        max(1, int(round(10 * 60 / cadence_s))),
+        max(1, int(round(30 * 60 / cadence_s))),
     ) & major
 
     active &= valid & history_ready
@@ -201,20 +272,27 @@ def detect_activity_masks(
     major &= valid & history_ready
     severe &= valid & history_ready
 
-    anomaly, anomaly_median_threshold, anomaly_threshold = _causal_anomaly_mask(x, cadence_s)
+    anomaly, anomaly_median_threshold, anomaly_threshold = _causal_anomaly_mask(
+        x, cadence_s
+    )
 
-    envelopes = {
+    diagnostics = {
         "fast_5m_nt": fast,
         "medium_15m_nt": medium,
         "upper_30m_p75_nt": upper_30m,
         "slow_60m_nt": slow,
         "slow_3h_nt": slow_3h,
         "history_ready": history_ready,
-        "unsettled_threshold_nt": np.full(len(x), unsettled_threshold, dtype=float),
+        "unsettled_threshold_nt": np.full(
+            len(x), unsettled_threshold, dtype=float
+        ),
         "anomaly_threshold_nt": anomaly_threshold,
-        "anomaly_median_threshold_nt": np.full(len(x), anomaly_median_threshold, dtype=float),
+        "anomaly_median_threshold_nt": np.full(
+            len(x), anomaly_median_threshold, dtype=float
+        ),
+        "anomaly": anomaly & valid,
     }
-    return active, storm, major, severe, {**envelopes, "anomaly": anomaly}
+    return active, storm, major, severe, diagnostics
 
 
 def flag_activity(
@@ -237,6 +315,7 @@ def flag_activity(
         major_threshold=major_threshold,
         severe_threshold=severe_threshold,
     )
+
     medium = diagnostics["medium_15m_nt"]
     ready = diagnostics["history_ready"]
     flags = np.full(len(x), "quiet", dtype=object)
@@ -245,6 +324,7 @@ def flag_activity(
     flags[storm] = "minor_storm"
     flags[major] = "major_storm"
     flags[severe] = "severe_storm"
+
     anomaly = diagnostics["anomaly"]
     flags[anomaly & ready & ~active & ~storm] = "anomaly"
     flags[~np.isfinite(x)] = "quiet"
