@@ -13,14 +13,16 @@ def test_isolated_spike_does_not_create_storm():
     assert not np.any(np.isin(flags, ["minor_storm", "major_storm", "severe_storm"]))
 
 
-def test_sustained_storm_is_detected():
+def test_sustained_storm_is_detected_after_causal_warmup():
     residual = np.zeros(6 * 60, dtype=float)
     residual[60:300] = 60.0
-    active, storm, major, severe, _ = detect_activity_masks(
+    active, storm, major, severe, diagnostics = detect_activity_masks(
         residual, cadence_s=60.0, active_threshold=15.0, storm_threshold=35.0
     )
-    assert storm[150:240].mean() > 0.8
-    assert active[150:240].mean() > 0.8
+    ready = diagnostics["history_ready"]
+    assert not np.any(storm[: np.flatnonzero(ready)[0]])
+    assert storm[195:240].mean() > 0.8
+    assert active[195:240].mean() > 0.8
     assert not np.any(major)
     assert not np.any(severe)
 
@@ -31,7 +33,7 @@ def test_short_dip_does_not_split_storm_event():
     residual[300:310] = 5.0
     flags = flag_activity(residual, cadence_s=60.0)
     storm = np.isin(flags, ["minor_storm", "major_storm", "severe_storm"])
-    assert storm[180:420].mean() > 0.9
+    assert storm[195:420].mean() > 0.9
 
 
 def test_long_moderate_disturbance_uses_long_context():
@@ -42,7 +44,7 @@ def test_long_moderate_disturbance_uses_long_context():
     residual[210:225] = 12.0
     flags = flag_activity(residual, cadence_s=60.0, active_threshold=15.0, storm_threshold=35.0)
     storm = np.isin(flags, ["minor_storm", "major_storm", "severe_storm"])
-    assert storm[150:360].mean() > 0.75
+    assert storm[195:360].mean() > 0.75
 
 
 def test_nan_samples_are_safe():
@@ -67,6 +69,9 @@ def test_startup_requires_history():
     """The detector does not fabricate classifications before all windows exist."""
     residual = np.full(4 * 3600, 60.0, dtype=float)
     flags = flag_activity(residual, cadence_s=60.0)
-    # Three-hour context is the slowest feature, so the initial warm-up remains quiet.
-    assert np.all(flags[: 3 * 3600] == "quiet")
-    assert np.any(np.isin(flags[3 * 3600 :], ["minor_storm", "major_storm", "severe_storm"]))
+    # The slowest production feature is a 3-hour trailing context.  With
+    # one-minute samples, 180 prior samples are required before that feature is
+    # valid; the initial 179 samples therefore remain quiet.
+    warmup_samples = 3 * 60
+    assert np.all(flags[:warmup_samples] == "quiet")
+    assert np.any(np.isin(flags[warmup_samples:], ["minor_storm", "major_storm", "severe_storm"]))
