@@ -8,7 +8,7 @@ from typing import Any, Dict
 import numpy as np
 import pandas as pd
 
-from models.forecaster import ForecastResult, GeomagneticForecaster
+from .models.forecaster import ForecastResult, GeomagneticForecaster
 
 
 def _normalize_index_series(series: pd.Series | None) -> pd.Series | None:
