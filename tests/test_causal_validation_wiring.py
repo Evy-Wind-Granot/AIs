@@ -9,7 +9,14 @@ def test_causal_baseline_has_explicit_production_implementation():
     assert causal_baseline.compute_causal_qdc_baseline.__name__ == "compute_causal_qdc_baseline"
 
 
+def test_canonical_calibrator_installs_causal_baseline():
+    import magnetometer.detecting.calibrate  # noqa: F401
+
+    assert pg.pm.compute_qdc_baseline is causal_baseline.compute_causal_qdc_baseline
+    assert str(pg.DEFAULT_CACHE_DIR).endswith("case_cache_causal_v3")
+
+
 def test_causal_cache_namespace_is_distinct_from_legacy():
-    assert str(pg.DEFAULT_CACHE_DIR).endswith("case_cache")
+    legacy = Path(__file__).resolve().parents[1] / "magnetometer" / "data" / "case_cache"
     fresh = Path(__file__).resolve().parents[1] / "magnetometer" / "data" / "case_cache_causal_v3"
-    assert fresh.name != pg.DEFAULT_CACHE_DIR.name
+    assert fresh != legacy
