@@ -26,12 +26,16 @@ import production_grade_validation as pg
 from detector_core import DetectorProfile
 
 PARAMETER_GRID = {
-    "active_nt": (15.0, 20.0, 25.0, 30.0, 35.0),
-    "storm_nt": (35.0, 50.0, 60.0, 70.0, 80.0),
-    "active_fast_ratio": (1.10, 1.25, 1.40),
-    "storm_fast_ratio": (1.60, 1.80, 2.00),
-    "storm_upper_ratio": (1.00, 1.10, 1.20),
-    "storm_release_ratio": (0.60, 0.65, 0.70),
+    "active_nt": (10.0, 12.5, 15.0, 17.5, 20.0, 25.0, 30.0, 35.0),
+    "storm_nt": (30.0, 35.0, 40.0, 50.0, 60.0, 70.0, 80.0),
+    "active_fast_ratio": (0.90, 1.00, 1.10, 1.25, 1.40),
+    "storm_fast_ratio": (1.20, 1.40, 1.60, 1.80, 2.00),
+    "storm_upper_ratio": (0.90, 1.00, 1.10, 1.20),
+    "storm_release_ratio": (0.50, 0.55, 0.60, 0.65, 0.70, 0.75),
+    "active_on_minutes": (1.0, 3.0, 5.0, 10.0),
+    "active_off_minutes": (10.0, 20.0, 30.0, 60.0),
+    "storm_on_minutes": (2.0, 5.0, 10.0, 15.0),
+    "storm_off_minutes": (30.0, 60.0, 120.0, 180.0),
 }
 DEFAULT_WORKERS = 6
 
@@ -150,22 +154,37 @@ def _evaluate(cases: list[PreparedCase], profile: DetectorProfile) -> dict:
 
 def _objective(score: dict) -> float:
     a, s = score["active"], score["storm"]
-    if a["f1"] is None or s["f1"] is None:
+    if any(score[k]["f1"] is None for k in ("active", "storm")):
         return -1e9
-    return float(0.35 * a["f1"] + 0.65 * s["f1"] - 1.50 * (s["far"] or 1.0))
+    storm_far = s["far"] if s["far"] is not None else 1.0
+    storm_precision = s["precision"] if s["precision"] is not None else 0.0
+    active_precision = a["precision"] if a["precision"] is not None else 0.0
+    if storm_far > 0.02 or storm_precision < 0.45 or active_precision < 0.65:
+        return -1e9
+    return float(
+        0.25 * a["f1"]
+        + 0.45 * s["f1"]
+        + 0.20 * s["recall"]
+        + 0.10 * min(a["precision"], s["precision"])
+        - 3.0 * storm_far
+    )
 
 def _coordinate_descent(cases: list[PreparedCase], base: DetectorProfile) -> DetectorProfile:
     profile = base
-    for name in ("active_nt", "storm_nt", "active_fast_ratio", "storm_fast_ratio", "storm_upper_ratio", "storm_release_ratio"):
+    ordered = tuple(PARAMETER_GRID)
+    for name in ordered:
         best, best_obj = profile, _objective(_evaluate(cases, profile))
         for value in PARAMETER_GRID[name]:
             if name == "storm_nt" and value <= profile.active_nt: continue
             if name == "active_nt" and value >= profile.storm_nt: continue
+            if name == "active_off_minutes" and value < profile.active_on_minutes: continue
+            if name == "storm_off_minutes" and value < profile.storm_on_minutes: continue
             candidate = replace(profile, **{name: value})
             try: candidate.validate()
             except ValueError: continue
             obj = _objective(_evaluate(cases, candidate))
-            if obj > best_obj + 1e-12: best, best_obj = candidate, obj
+            if obj > best_obj + 1e-12:
+                best, best_obj = candidate, obj
         profile = best
     return profile
 
@@ -188,8 +207,6 @@ def main() -> None:
     splits, cases = pg.discover_suite(years, args.cases_per_class_per_year, args.window_days)
     cases = [c for c in cases if c.split != "test"]
 
-    # Reuse the Kp series already fetched by discover_suite for every shorter
-    # case range, and prefetch Dst months before worker threads start.
     kp_start = f"{min(years):04d}-01-01"; kp_end = f"{max(years):04d}-12-31"
     master_kp = pg._fetch_kp_cached(kp_start, kp_end)
     pg._fetch_kp_cached = lambda _start, _end: master_kp
@@ -220,10 +237,11 @@ def main() -> None:
     if not cal or not val:
         raise SystemExit("Calibration requires successful calibration and validation cases.")
     print(f"Prepared {len(cal)} calibration and {len(val)} validation cases.", flush=True)
-    print("Searching cached feature space...", flush=True)
+    print("Searching expanded cached causal feature space...", flush=True)
     profile = _coordinate_descent(cal, DetectorProfile()); calibration_score = _evaluate(cal, profile); validation_score = _evaluate(val, profile)
     passed = _passes(validation_score, args.min_precision, args.min_recall, args.min_f1, args.max_storm_far)
-    output = {"status": "certified" if passed else "candidate", "profile": asdict(profile), "selection": {"method": "chronological coordinate descent over cached causal features", "calibration_years": splits["calibration"], "validation_years": splits["validation"], "final_test_years": splits["test"], "final_test_used": False}, "calibration_score": calibration_score, "validation_score": validation_score, "validation_floors": {"min_precision": args.min_precision, "min_recall": args.min_recall, "min_f1": args.min_f1, "max_storm_far": args.max_storm_far}, "passed_validation": passed, "failed_cases": failures}
+    output = {"status": "certified" if passed else "candidate", "profile": asdict(profile), "selection": {"method": "chronological coordinate descent over expanded cached causal feature space", "calibration_years": splits["calibration"], "validation_years": splits["validation"], "final_test_years": splits["test"], "final_test_used": False}, "calibration_score": calibration_score, "validation_score": validation_score, "validation_floors": {"min_precision": args.min_precision, "min_recall": args.min_recall, "min_f1": args.min_f1, "max_storm_far": args.max_storm_far}, "passed_validation": passed, "failed_cases": failures}
+    profile.validate()
     path = Path(args.profile_path).resolve()
     if passed:
         path.write_text(json.dumps(output, indent=2) + "\n"); print(f"CERTIFIED detector profile written to {path}", flush=True)
