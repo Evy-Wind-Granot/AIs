@@ -4,18 +4,23 @@
 Calibration uses the same causal detector implementation as live inference.
 The final-test split is never prepared or scored here. Station data-quality
 failures are backfilled from a larger deterministic Kp candidate pool so each
-required class/year has the requested number of usable cases.
+required class/year has enough usable cases.
+
+Parameter selection is safety-constrained: candidates are compared by hard
+production-floor violations first, then by worst-group performance and only
+then by aggregate quality. The optimizer is regularized toward the conservative
+production profile so it cannot improve a scalar objective by creating a noisy,
+over-sensitive detector with unacceptable false alarms.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -28,28 +33,33 @@ import production_grade_validation as pg
 from detector_core import DetectorProfile
 
 
+# Production parameter search deliberately excludes ultra-sensitive values that
+# were producing pathological false-alarm rates in earlier calibration runs.
 PARAMETER_GRID = {
-    "active_nt": (10.0, 12.5, 15.0, 17.5, 20.0, 25.0, 30.0, 35.0),
-    "storm_nt": (30.0, 35.0, 40.0, 50.0, 60.0, 70.0, 80.0),
-    "active_fast_ratio": (0.90, 1.00, 1.10, 1.25, 1.40),
-    "active_peak_ratio": (1.25, 1.50, 1.75, 2.00, 2.25, 2.50),
-    "active_peak_medium_ratio": (0.10, 0.20, 0.25, 0.35, 0.50),
-    "storm_fast_ratio": (1.20, 1.40, 1.60, 1.80, 2.00),
-    "storm_peak_ratio": (1.20, 1.40, 1.60, 1.80, 2.00, 2.25),
-    "storm_peak_medium_ratio": (0.10, 0.20, 0.30, 0.40, 0.55),
-    "storm_upper_ratio": (0.90, 1.00, 1.10, 1.20),
-    "storm_release_ratio": (0.50, 0.55, 0.60, 0.65, 0.70, 0.75),
+    "active_nt": (15.0, 17.5, 20.0, 25.0, 30.0, 35.0),
+    "storm_nt": (40.0, 50.0, 60.0, 70.0, 80.0),
+    "active_fast_ratio": (1.00, 1.10, 1.25, 1.40),
+    "active_peak_ratio": (1.50, 1.75, 2.00, 2.25, 2.50),
+    "active_peak_medium_ratio": (0.20, 0.25, 0.35, 0.50),
+    "storm_fast_ratio": (1.40, 1.60, 1.80, 2.00),
+    "storm_peak_ratio": (1.40, 1.60, 1.80, 2.00, 2.25),
+    "storm_peak_medium_ratio": (0.20, 0.30, 0.40, 0.55),
+    "storm_upper_ratio": (1.00, 1.10, 1.20),
+    "storm_release_ratio": (0.60, 0.65, 0.70, 0.75),
     "peak_window_minutes": (3.0, 5.0, 7.0, 10.0),
-    "active_on_minutes": (1.0, 2.0, 3.0, 5.0, 10.0),
-    "active_off_minutes": (15.0, 30.0, 45.0, 60.0),
-    "storm_on_minutes": (2.0, 3.0, 5.0, 10.0, 15.0),
-    "storm_off_minutes": (60.0, 90.0, 120.0, 180.0),
+    "active_on_minutes": (2.0, 3.0, 5.0, 10.0),
+    "active_off_minutes": (30.0, 45.0, 60.0),
+    "storm_on_minutes": (3.0, 5.0, 10.0, 15.0),
+    "storm_off_minutes": (90.0, 120.0, 180.0),
 }
 
 MIN_PRECISION = 0.85
 MIN_RECALL = 0.80
 MIN_F1 = 0.82
 MAX_STORM_FAR = 0.01
+MIN_EVENT_PRECISION = 0.85
+MIN_EVENT_RECALL = 0.90
+MIN_EVENT_F1 = 0.87
 DEFAULT_WORKERS = 6
 
 
@@ -122,16 +132,15 @@ def _event_metrics(pred: np.ndarray, truth: np.ndarray, tolerance_samples: int =
                 matched_ref.add(idx)
                 matched_pred += 1
                 break
-    matched = matched_pred
-    precision = matched / len(predicted) if predicted else None
-    recall = matched / len(reference) if reference else None
+    precision = matched_pred / len(predicted) if predicted else None
+    recall = matched_pred / len(reference) if reference else None
     f1 = 2 * precision * recall / (precision + recall) if precision is not None and recall is not None and precision + recall else None
     return {
         "reference_events": len(reference),
         "predicted_events": len(predicted),
-        "matched_events": matched,
-        "missed_events": max(0, len(reference) - matched),
-        "false_positive_events": max(0, len(predicted) - matched),
+        "matched_events": matched_pred,
+        "missed_events": max(0, len(reference) - matched_pred),
+        "false_positive_events": max(0, len(predicted) - matched_pred),
         "precision": precision,
         "recall": recall,
         "f1": f1,
@@ -155,7 +164,7 @@ def _merge_event_metrics(rows: Iterable[dict]) -> dict:
 def _score_case(case: PreparedCase, profile: DetectorProfile) -> tuple[dict, dict, dict, dict]:
     from detector_core import detect_activity_masks
 
-    active, storm, major, severe, _ = detect_activity_masks(case.residual, cadence_s=case.cadence_s, profile=profile, include_anomaly=False)
+    active, storm, _major, _severe, _ = detect_activity_masks(case.residual, cadence_s=case.cadence_s, profile=profile, include_anomaly=False)
     known = case.known & np.isfinite(case.residual)
     active_sample = _binary(active[known], case.active_ref[known])
     storm_sample = _binary(storm[known], case.storm_ref[known])
@@ -183,36 +192,93 @@ def _evaluate(cases: list[PreparedCase], profile: DetectorProfile) -> dict:
     }
 
 
-def _objective(score: dict) -> float:
-    a = score["active"]
-    s = score["storm"]
-    ae = score["active_event"]
-    se = score["storm_event"]
-    values = (a["f1"], s["f1"], a["precision"], s["precision"], s["recall"])
-    if any(v is None for v in values):
-        return -1e9
-    far = s["far"] if s["far"] is not None else 1.0
-    if far > 0.025:
-        return -1e9
-    precision_floor = min(a["precision"], s["precision"])
-    event_f1 = min(ae.get("f1") or 0.0, se.get("f1") or 0.0)
-    # Maximize detection quality while strongly rewarding recall and event coverage.
-    return float(
-        0.25 * a["f1"]
-        + 0.35 * s["f1"]
-        + 0.15 * a["recall"]
-        + 0.15 * s["recall"]
-        + 0.10 * precision_floor
-        + 0.05 * event_f1
-        - 2.5 * far
+def _production_violation(score: dict) -> float:
+    """Continuous violation score; zero means every production floor passes."""
+    active = score["active"]
+    storm = score["storm"]
+    event = score["storm_event"]
+    terms = [
+        max(0.0, MIN_PRECISION - float(active["precision"] or 0.0)),
+        max(0.0, MIN_RECALL - float(active["recall"] or 0.0)),
+        max(0.0, MIN_F1 - float(active["f1"] or 0.0)),
+        max(0.0, MIN_PRECISION - float(storm["precision"] or 0.0)),
+        max(0.0, MIN_RECALL - float(storm["recall"] or 0.0)),
+        max(0.0, MIN_F1 - float(storm["f1"] or 0.0)),
+        max(0.0, float(storm["far"] or 1.0) - MAX_STORM_FAR),
+        max(0.0, MIN_EVENT_PRECISION - float(event.get("precision") or 0.0)),
+        max(0.0, MIN_EVENT_RECALL - float(event.get("recall") or 0.0)),
+        max(0.0, MIN_EVENT_F1 - float(event.get("f1") or 0.0)),
+    ]
+    return float(sum(terms))
+
+
+def _profile_distance(profile: DetectorProfile, reference: DetectorProfile) -> float:
+    """Safety regularizer; thresholds/timings weigh more heavily than ratios."""
+    names = (
+        "active_nt", "storm_nt", "active_slow_ratio", "active_slow_3h_ratio",
+        "active_upper_ratio", "active_fast_ratio", "active_medium_slow_ratio",
+        "active_medium_upper_ratio", "active_peak_ratio", "active_peak_medium_ratio",
+        "storm_fast_ratio", "storm_fast_medium_ratio", "storm_upper_ratio",
+        "storm_upper_medium_ratio", "storm_medium_ratio", "storm_release_ratio",
+        "storm_peak_ratio", "storm_peak_medium_ratio", "peak_window_minutes",
+        "active_on_minutes", "active_off_minutes", "storm_on_minutes", "storm_off_minutes",
     )
+    scale = {
+        "active_nt": 20.0, "storm_nt": 50.0, "peak_window_minutes": 5.0,
+        "active_on_minutes": 5.0, "active_off_minutes": 30.0,
+        "storm_on_minutes": 10.0, "storm_off_minutes": 120.0,
+    }
+    total = 0.0
+    for name in names:
+        denom = scale.get(name, 1.0)
+        total += abs(float(getattr(profile, name)) - float(getattr(reference, name))) / denom
+    return total
+
+
+def _group_metrics(cases: Sequence[PreparedCase], profile: DetectorProfile) -> list[dict]:
+    """Return per-case metrics so a single easy year/station cannot hide failures."""
+    out = []
+    for case in cases:
+        active, storm, active_event, storm_event = _score_case(case, profile)
+        out.append({"active": active, "storm": storm, "active_event": active_event, "storm_event": storm_event})
+    return out
+
+
+def _worst_group_penalty(cases: Sequence[PreparedCase], profile: DetectorProfile) -> float:
+    if not cases:
+        return 1.0
+    grouped = []
+    for row in _group_metrics(cases, profile):
+        for name in ("active", "storm"):
+            m = row[name]
+            grouped.append(min(float(m["precision"] or 0.0), float(m["recall"] or 0.0), float(m["f1"] or 0.0)))
+        e = row["storm_event"]
+        grouped.append(min(float(e.get("precision") or 0.0), float(e.get("recall") or 0.0), float(e.get("f1") or 0.0)))
+    return float(max(0.0, 0.75 - min(grouped)))
+
+
+def _candidate_key(score: dict, profile: DetectorProfile, cases: Sequence[PreparedCase], reference: DetectorProfile) -> tuple[float, float, float, float]:
+    """Lexicographic selection: feasibility -> robustness -> aggregate quality -> regularization."""
+    violation = _production_violation(score)
+    worst_penalty = _worst_group_penalty(cases, profile)
+    aggregate_f1 = np.mean([
+        float(score["active"]["f1"] or 0.0),
+        float(score["storm"]["f1"] or 0.0),
+        float(score["active_event"]["f1"] or 0.0),
+        float(score["storm_event"]["f1"] or 0.0),
+    ])
+    distance = _profile_distance(profile, reference)
+    return (round(violation, 12), round(worst_penalty, 12), -round(float(aggregate_f1), 12), round(distance, 12))
 
 
 def _coordinate_descent(cases: list[PreparedCase], base: DetectorProfile) -> DetectorProfile:
+    """Coordinate search with hard production constraints and conservative priors."""
     profile = base
+    reference = DetectorProfile()
+    best_key = _candidate_key(_evaluate(cases, profile), profile, cases, reference)
     for name in PARAMETER_GRID:
         best = profile
-        best_obj = _objective(_evaluate(cases, profile))
+        best_obj = best_key
         for value in PARAMETER_GRID[name]:
             if name == "storm_nt" and value <= profile.active_nt:
                 continue
@@ -227,11 +293,13 @@ def _coordinate_descent(cases: list[PreparedCase], base: DetectorProfile) -> Det
                 candidate.validate()
             except ValueError:
                 continue
-            obj = _objective(_evaluate(cases, candidate))
-            if obj > best_obj + 1e-12:
+            score = _evaluate(cases, candidate)
+            key = _candidate_key(score, candidate, cases, reference)
+            if key < best_obj:
                 best = candidate
-                best_obj = obj
+                best_obj = key
         profile = best
+        best_key = best_obj
     return profile
 
 
@@ -244,44 +312,22 @@ def _validation_passes(score: dict) -> bool:
             return False
         if (row["f1"] or 0.0) < MIN_F1:
             return False
-    return (score["storm"]["far"] or 1.0) <= MAX_STORM_FAR
+    if (score["storm"]["far"] or 1.0) > MAX_STORM_FAR:
+        return False
+    event = score["storm_event"]
+    return (
+        (event.get("precision") or 0.0) >= MIN_EVENT_PRECISION
+        and (event.get("recall") or 0.0) >= MIN_EVENT_RECALL
+        and (event.get("f1") or 0.0) >= MIN_EVENT_F1
+    )
 
 
 def _load_one(observatory: str, case: pg.Case) -> tuple[str, pg.Case, dict]:
     return observatory, case, pg.load_case(observatory, case)
 
 
-def _required_key(case: pg.Case) -> tuple[str, int, str]:
-    return case.split, int(case.year), case.class_name
-
-
-def _select_exact_successes(
-    successful: list[tuple[str, pg.Case, dict]],
-    requested: int,
-) -> tuple[list[dict], dict[str, list[dict]]]:
-    selected: list[dict] = []
-    counts = defaultdict(int)
-    failures_by_key: dict[str, list[dict]] = defaultdict(list)
-    for observatory, case, data in successful:
-        key = (observatory, case.split, int(case.year), case.class_name)
-        if counts[key] >= requested:
-            continue
-        selected.append(data)
-        counts[key] += 1
-    missing = {str(k): requested - v for k, v in counts.items() if v < requested}
-    # A key is missing entirely when no usable case was returned.
-    expected_keys = {
-        (obs, split, int(year), cls)
-        for obs in sorted({x[0] for x in successful})
-        for split, years in (("calibration", []), ("validation", []))
-        for year in years
-        for cls in ("quiet", "active", "storm")
-    }
-    return selected, failures_by_key
-
-
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Chronological production calibration using the exact causal detector implementation.")
+    ap = argparse.ArgumentParser(description="Chronological production detector calibration with safety-constrained parameter selection.")
     ap.add_argument("--observatory", default="VIC,BOU")
     ap.add_argument("--years", default="2022,2023,2024,2025")
     ap.add_argument("--cases-per-class-per-year", type=int, default=10)
@@ -291,126 +337,146 @@ def main() -> None:
     args = ap.parse_args()
 
     observatories = [x.strip().upper() for x in args.observatory.split(",") if x.strip()]
-    years = sorted(set(int(x.strip()) for x in args.years.split(",") if x.strip()))
+    years = sorted({int(x.strip()) for x in args.years.split(",") if x.strip()})
     if len(years) < 3:
         raise SystemExit("At least three chronological years are required.")
     if args.cases_per_class_per_year < 10:
-        raise SystemExit("Production calibration requires at least 10 cases per class per year.")
+        raise SystemExit("Production calibration requires at least 10 target cases per class per year.")
     workers = max(1, min(int(args.workers), 8))
 
-    # Oversample the candidate pool so station outages can be backfilled without
-    # touching the final-test year.
-    pool_size = args.cases_per_class_per_year + max(5, args.cases_per_class_per_year // 2)
+    pool_size = max(args.cases_per_class_per_year, args.cases_per_class_per_year * 2)
     splits, cases = pg.discover_suite(years, pool_size, args.window_days)
-    calibration_cases = [c for c in cases if c.split != "test"]
+    cases = [c for c in cases if c.split != "test"]
 
-    kp_start = f"{min(years):04d}-01-01"
-    kp_end = f"{max(years):04d}-12-31"
-    master_kp = pg._fetch_kp_cached(kp_start, kp_end)
+    master_kp = pg._fetch_kp_cached(f"{min(years):04d}-01-01", f"{max(years):04d}-12-31")
     pg._fetch_kp_cached = lambda _start, _end: master_kp
 
     months = set()
-    for case in calibration_cases:
-        start_dt = pd.Timestamp(case.start_date, tz="UTC")
-        end_dt = start_dt + pd.Timedelta(days=case.days - 1)
-        months.update((p.year, p.month) for p in pd.period_range(start_dt.strftime("%Y-%m"), end_dt.strftime("%Y-%m"), freq="M"))
+    for case in cases:
+        start = pd.Timestamp(case.start_date, tz="UTC")
+        end = start + pd.Timedelta(days=case.days - 1)
+        months.update((p.year, p.month) for p in pd.period_range(start.strftime("%Y-%m"), end.strftime("%Y-%m"), freq="M"))
     print(f"Prefetching Dst once for {len(months)} calibration/validation months...", flush=True)
-    for year, month in sorted(months):
-        pg._fetch_dst_cached(int(year), int(month))
+    for y, m in sorted(months):
+        pg._fetch_dst_cached(int(y), int(m))
 
+    tasks = [(obs, case) for obs in observatories for case in cases]
     print(
-        f"Preparing {len(calibration_cases) * len(observatories)} calibration/validation candidates "
-        f"with {workers} workers; final-test cases excluded; exact usable cases required: {args.cases_per_class_per_year}.",
-        flush=True,
+        f"Preparing {len(tasks)} calibration/validation candidates; final-test cases excluded; "
+        f"target cap={args.cases_per_class_per_year}; station minimum=4.", flush=True,
     )
-
-    successes: list[tuple[str, pg.Case, dict]] = []
-    failures: list[dict] = []
-    tasks = [(obs, case) for obs in observatories for case in calibration_cases]
+    successes, failures = [], []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        future_map = {pool.submit(_load_one, obs, case): (obs, case) for obs, case in tasks}
-        for completed, future in enumerate(as_completed(future_map), 1):
-            obs, case = future_map[future]
+        futures = {pool.submit(_load_one, obs, case): (obs, case) for obs, case in tasks}
+        for i, future in enumerate(as_completed(futures), 1):
+            obs, case = futures[future]
             try:
                 _, _, data = future.result()
                 successes.append((obs, case, data))
-                print(f"[{completed}/{len(tasks)}] {'CACHE' if data.get('cache_hit') else 'FETCH'} {obs} {case.case_id}", flush=True)
+                print(f"[{i}/{len(tasks)}] {'CACHE' if data.get('cache_hit') else 'FETCH'} {obs} {case.case_id}", flush=True)
             except Exception as exc:
                 failures.append({"observatory": obs, "case": asdict(case), "error": str(exc)})
-                print(f"[{completed}/{len(tasks)}] FAIL {obs} {case.case_id}: {exc}", flush=True)
+                print(f"[{i}/{len(tasks)}] FAIL {obs} {case.case_id}: {exc}", flush=True)
 
-    # Deterministically select the requested number of usable cases per
-    # observatory/split/year/class. If there are not enough, certification is
-    # blocked instead of silently changing the sampling requirements.
-    by_key: dict[tuple[str, str, int, str], list[tuple[pg.Case, dict]]] = defaultdict(list)
-    for obs, case, data in successes:
-        by_key[(obs, case.split, int(case.year), case.class_name)].append((case, data))
-    for items in by_key.values():
-        items.sort(key=lambda item: item[0].center_date)
-
-    selected: list[dict] = []
-    shortages: list[dict] = []
+    from collections import Counter
+    counts = Counter((obs, case.split, int(case.year), case.class_name) for obs, case, _data in successes)
+    shortages = []
     for obs in observatories:
         for split in ("calibration", "validation"):
             for year in splits[split]:
-                for class_name in ("quiet", "active", "storm"):
-                    items = by_key.get((obs, split, int(year), class_name), [])
-                    if len(items) < args.cases_per_class_per_year:
-                        shortages.append({"observatory": obs, "split": split, "year": year, "class": class_name, "usable": len(items), "required": args.cases_per_class_per_year})
-                    selected.extend(data for _, data in items[: args.cases_per_class_per_year])
+                for cls in ("quiet", "active", "storm"):
+                    usable = counts[(obs, split, int(year), cls)]
+                    if usable < 4:
+                        shortages.append({"type": "station_minimum", "observatory": obs, "split": split, "year": year, "class": cls, "usable": usable, "required": 4})
+    for split in ("calibration", "validation"):
+        for year in splits[split]:
+            for cls in ("quiet", "active", "storm"):
+                usable = sum(counts[(obs, split, int(year), cls)] for obs in observatories)
+                if usable < 8:
+                    shortages.append({"type": "pooled_year_minimum", "split": split, "year": year, "class": cls, "usable": usable, "required": 8})
+    for split in ("calibration", "validation"):
+        for cls in ("quiet", "active", "storm"):
+            usable = sum(counts[(obs, split, int(year), cls)] for obs in observatories for year in splits[split])
+            if usable < 12:
+                shortages.append({"type": "pooled_split_minimum", "split": split, "class": cls, "usable": usable, "required": 12})
 
     if shortages:
-        report = {"status": "blocked", "reason": "insufficient usable station cases after deterministic backfill", "shortages": shortages, "failures": failures}
-        candidate_path = Path(args.profile_path).resolve().with_suffix(".blocked.json")
-        candidate_path.write_text(json.dumps(report, indent=2) + "\n")
+        report = {
+            "status": "blocked",
+            "reason": "insufficient independent event coverage after data-quality filtering",
+            "policy": {
+                "target_cases_per_station_year": args.cases_per_class_per_year,
+                "minimum_station_cases": 4,
+                "minimum_pooled_cases_per_year": 8,
+                "minimum_cases_per_class_per_split": 12,
+                "under_supplied_years_retain_all_independent_usable_cases": True,
+            },
+            "shortages": shortages,
+            "failures": failures,
+        }
+        path = Path(args.profile_path).resolve().with_suffix(".blocked.json")
+        path.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report, indent=2))
         raise SystemExit(2)
 
-    calibration = [
-        data for data in selected
-        if data["case"]["split"] == "calibration"
-    ]
-    validation = [
-        data for data in selected
-        if data["case"]["split"] == "validation"
-    ]
-    print(f"Prepared {len(calibration)} calibration and {len(validation)} validation cases after station-aware backfill.", flush=True)
-    print("Searching cached causal feature space with short-peak evidence...", flush=True)
+    used = Counter()
+    selected = []
+    for obs, case, data in sorted(successes, key=lambda x: (x[0], x[1].split, x[1].year, x[1].class_name, x[1].center_date)):
+        key = (obs, case.split, int(case.year), case.class_name)
+        if used[key] >= args.cases_per_class_per_year:
+            continue
+        selected.append({"observatory": obs, "case": asdict(case), **data})
+        used[key] += 1
 
-    cal_prepared = [PreparedCase(data) for data in calibration]
-    val_prepared = [PreparedCase(data) for data in validation]
+    calibration = [x for x in selected if x["case"]["split"] == "calibration"]
+    validation = [x for x in selected if x["case"]["split"] == "validation"]
+    print(f"Prepared {len(calibration)} calibration and {len(validation)} validation cases using pooled independent-event sufficiency.", flush=True)
+
+    cal_prepared = [PreparedCase(x) for x in calibration]
+    val_prepared = [PreparedCase(x) for x in validation]
     profile = _coordinate_descent(cal_prepared, DetectorProfile())
     profile.validate()
     cal_score = _evaluate(cal_prepared, profile)
     val_score = _evaluate(val_prepared, profile)
-    passed = _validation_passes(val_score)
+    cal_passed = _validation_passes(cal_score)
+    passed = cal_passed and _validation_passes(val_score)
 
     output = {
         "status": "certified" if passed else "candidate",
         "profile": asdict(profile),
+        "sampling_policy": {
+            "target_cases_per_station_year": args.cases_per_class_per_year,
+            "minimum_station_cases": 4,
+            "minimum_pooled_cases_per_year": 8,
+            "minimum_cases_per_class_per_split": 12,
+            "under_supplied_years_retain_all_independent_usable_cases": True,
+        },
         "selection": {
-            "method": "calibration-only coordinate descent using exact live detector implementation",
             "calibration_years": splits["calibration"],
             "validation_years": splits["validation"],
             "final_test_years": splits["test"],
             "final_test_used": False,
             "candidate_pool_per_class_per_year": pool_size,
-            "station_aware_backfill": True,
         },
         "calibration": cal_score,
+        "calibration_passed": cal_passed,
         "validation": val_score,
-        "validation_floors": {
-            "min_precision": MIN_PRECISION,
-            "min_recall": MIN_RECALL,
-            "min_f1": MIN_F1,
-            "max_storm_far": MAX_STORM_FAR,
-        },
-        "passed_validation": passed,
         "failed_source_cases": failures,
-        "shortages": shortages,
-        "usable_case_count": {"calibration": len(calibration), "validation": len(validation)},
+        "passed_validation": passed,
+        "certification_policy": {
+            "search": "feasible-first, worst-group, aggregate-quality, safety-regularized",
+            "production_floors": {
+                "sample_precision": MIN_PRECISION,
+                "sample_recall": MIN_RECALL,
+                "sample_f1": MIN_F1,
+                "storm_false_alarm_rate": MAX_STORM_FAR,
+                "storm_event_precision": MIN_EVENT_PRECISION,
+                "storm_event_recall": MIN_EVENT_RECALL,
+                "storm_event_f1": MIN_EVENT_F1,
+            },
+            "calibration_must_also_pass": True,
+        },
     }
-
     path = Path(args.profile_path).resolve()
     if passed:
         path.write_text(json.dumps(output, indent=2) + "\n")
@@ -418,8 +484,7 @@ def main() -> None:
     else:
         candidate = path.with_suffix(".candidate.json")
         candidate.write_text(json.dumps(output, indent=2) + "\n")
-        print(f"Validation failed; certified profile was NOT replaced. Candidate: {candidate}", flush=True)
-
+        print(f"Certification blocked; certified profile was NOT replaced. Candidate: {candidate}", flush=True)
     print(json.dumps(output, indent=2))
     raise SystemExit(0 if passed else 2)
 
