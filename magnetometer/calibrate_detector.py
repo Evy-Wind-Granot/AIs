@@ -78,17 +78,22 @@ class PreparedCase:
             | ((self.slow_3h >= p.storm_nt) & (self.medium_15m >= p.storm_medium_ratio * p.storm_nt))
         )
         storm_evidence = ready & (sustained | strong_short | strong_30m)
-        active = _hysteresis_mask(active_evidence, ready & (self.medium_15m <= 0.60 * p.active_nt), self._window(p.active_on_minutes * 60, self.cadence_s), self._window(p.active_off_minutes * 60, self.cadence_s))
-        storm = _hysteresis_mask(storm_evidence, ready & (self.medium_15m <= p.storm_release_ratio * p.storm_nt), self._window(p.storm_on_minutes * 60, self.cadence_s), self._window(p.storm_off_minutes * 60, self.cadence_s))
+        active = _hysteresis_mask(active_evidence, ready & (self.medium_15m <= 0.60 * p.active_nt), self._window(p.active_on_minutes * 60, self.cadence_s), self._window(p.active_off_minutes * 60, self.cadence_s), valid=ready)
+        storm = _hysteresis_mask(storm_evidence, ready & (self.medium_15m <= p.storm_release_ratio * p.storm_nt), self._window(p.storm_on_minutes * 60, self.cadence_s), self._window(p.storm_off_minutes * 60, self.cadence_s), valid=ready)
         return active & ready, storm & ready
 
-def _hysteresis_mask(on: np.ndarray, off: np.ndarray, min_on: int, min_off: int) -> np.ndarray:
+def _hysteresis_mask(on: np.ndarray, off: np.ndarray, min_on: int, min_off: int, valid: np.ndarray | None = None) -> np.ndarray:
     on = np.asarray(on, dtype=bool); off = np.asarray(off, dtype=bool)
     if on.shape != off.shape:
         raise ValueError("on/off masks must have identical shapes")
+    valid_mask = np.ones(on.shape, dtype=bool) if valid is None else np.asarray(valid, dtype=bool)
+    if valid_mask.shape != on.shape:
+        raise ValueError("valid mask must have identical shape")
     out = np.zeros(on.size, dtype=bool)
     state = False; candidate = 0; min_on = max(1, int(min_on)); min_off = max(1, int(min_off))
     for i in range(on.size):
+        if not valid_mask[i]:
+            state = False; candidate = 0; continue
         if not state:
             candidate = candidate + 1 if on[i] else 0
             if candidate >= min_on:
@@ -161,18 +166,11 @@ def _objective(score: dict) -> float:
     active_precision = a["precision"] if a["precision"] is not None else 0.0
     if storm_far > 0.02 or storm_precision < 0.45 or active_precision < 0.65:
         return -1e9
-    return float(
-        0.25 * a["f1"]
-        + 0.45 * s["f1"]
-        + 0.20 * s["recall"]
-        + 0.10 * min(a["precision"], s["precision"])
-        - 3.0 * storm_far
-    )
+    return float(0.25 * a["f1"] + 0.45 * s["f1"] + 0.20 * s["recall"] + 0.10 * min(a["precision"], s["precision"]) - 3.0 * storm_far)
 
 def _coordinate_descent(cases: list[PreparedCase], base: DetectorProfile) -> DetectorProfile:
     profile = base
-    ordered = tuple(PARAMETER_GRID)
-    for name in ordered:
+    for name in tuple(PARAMETER_GRID):
         best, best_obj = profile, _objective(_evaluate(cases, profile))
         for value in PARAMETER_GRID[name]:
             if name == "storm_nt" and value <= profile.active_nt: continue
@@ -183,8 +181,7 @@ def _coordinate_descent(cases: list[PreparedCase], base: DetectorProfile) -> Det
             try: candidate.validate()
             except ValueError: continue
             obj = _objective(_evaluate(cases, candidate))
-            if obj > best_obj + 1e-12:
-                best, best_obj = candidate, obj
+            if obj > best_obj + 1e-12: best, best_obj = candidate, obj
         profile = best
     return profile
 
@@ -206,7 +203,6 @@ def main() -> None:
     workers = max(1, min(int(args.workers), 8))
     splits, cases = pg.discover_suite(years, args.cases_per_class_per_year, args.window_days)
     cases = [c for c in cases if c.split != "test"]
-
     kp_start = f"{min(years):04d}-01-01"; kp_end = f"{max(years):04d}-12-31"
     master_kp = pg._fetch_kp_cached(kp_start, kp_end)
     pg._fetch_kp_cached = lambda _start, _end: master_kp
@@ -218,7 +214,6 @@ def main() -> None:
     print(f"Prefetching Dst once for {len(months)} calibration/validation months...", flush=True)
     for year, month in sorted(months):
         pg._fetch_dst_cached(int(year), int(month))
-
     print(f"Preparing {len(cases) * len(observatories)} calibration/validation cases with {workers} workers; final-test cases excluded.", flush=True)
     cal: list[PreparedCase] = []; val: list[PreparedCase] = []; failures = []
     tasks = [(obs, case) for obs in observatories for case in cases]
