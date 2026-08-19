@@ -15,7 +15,15 @@ def _frame(n=1200):
 
 def test_detector_has_event_state_features():
     features = make_forecast_features(_frame())
-    required = {"consecutive_above_35nt_min", "minutes_since_35nt", "above_35nt_fraction_60m", "residual_slope_60m", "dbdt_accel_60m", "kp_max_180m", "dst_change_180m"}
+    required = {
+        "consecutive_above_35nt_min",
+        "minutes_since_35nt",
+        "above_35nt_fraction_60m",
+        "residual_slope_60m",
+        "dbdt_accel_max_60m",
+        "kp_max_180m",
+        "dst_change_180m",
+    }
     assert required.issubset(features.columns)
 
 
@@ -25,7 +33,13 @@ def test_event_features_are_causal():
     changed = frame.iloc[:900].copy()
     changed.iloc[-1, changed.columns.get_loc("residual")] += 500.0
     second = make_forecast_features(changed)
-    cols = ["consecutive_above_35nt_min", "minutes_since_35nt", "above_35nt_fraction_60m", "residual_slope_60m", "dbdt_accel_60m"]
+    cols = [
+        "consecutive_above_35nt_min",
+        "minutes_since_35nt",
+        "above_35nt_fraction_60m",
+        "residual_slope_60m",
+        "dbdt_accel_max_60m",
+    ]
     pd.testing.assert_frame_equal(first.iloc[:899][cols], second.iloc[:899][cols])
 
 
