@@ -1,0 +1,14 @@
+metric,value
+completeness,1.0
+bias_nt,-0.029862992060898923
+mae_nt,1.2108669984316087
+rmse_nt,1.7464749508330104
+median_abs_error_nt,0.8637256693109521
+p95_abs_error_nt,3.361442454287316
+quiet_rms_nt,1.7315065188063938
+quiet_mae_nt,1.2078073154669706
+active_fraction,0.0
+storm_fraction,0.0
+anomaly_fraction,0.0
+analysis_seconds,0.09647752600722015
+analysis_samples_per_second,447772.67606102396

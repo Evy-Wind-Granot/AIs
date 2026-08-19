@@ -1,0 +1,237 @@
+{
+  "suite": {
+    "observatories": [
+      "VIC",
+      "BOU"
+    ],
+    "years": [
+      2023,
+      2024,
+      2025
+    ],
+    "window_days": 7,
+    "cases_per_class": 3,
+    "discovered_cases": [
+      {
+        "case_id": "quiet_20230113",
+        "start_date": "2023-01-13",
+        "days": 7,
+        "class_name": "quiet"
+      },
+      {
+        "case_id": "quiet_20230125",
+        "start_date": "2023-01-25",
+        "days": 7,
+        "class_name": "quiet"
+      },
+      {
+        "case_id": "quiet_20230209",
+        "start_date": "2023-02-09",
+        "days": 7,
+        "class_name": "quiet"
+      },
+      {
+        "case_id": "active_20230223",
+        "start_date": "2023-02-23",
+        "days": 7,
+        "class_name": "active"
+      },
+      {
+        "case_id": "active_20230311",
+        "start_date": "2023-03-11",
+        "days": 7,
+        "class_name": "active"
+      },
+      {
+        "case_id": "active_20230420",
+        "start_date": "2023-04-20",
+        "days": 7,
+        "class_name": "active"
+      },
+      {
+        "case_id": "storm_20240507",
+        "start_date": "2024-05-07",
+        "days": 7,
+        "class_name": "storm"
+      },
+      {
+        "case_id": "storm_20241007",
+        "start_date": "2024-10-07",
+        "days": 7,
+        "class_name": "storm"
+      },
+      {
+        "case_id": "storm_20251108",
+        "start_date": "2025-11-08",
+        "days": 7,
+        "class_name": "storm"
+      }
+    ],
+    "calibration_cases": [
+      {
+        "case_id": "quiet_20230113",
+        "start_date": "2023-01-13",
+        "days": 7,
+        "class_name": "quiet"
+      },
+      {
+        "case_id": "quiet_20230209",
+        "start_date": "2023-02-09",
+        "days": 7,
+        "class_name": "quiet"
+      },
+      {
+        "case_id": "active_20230223",
+        "start_date": "2023-02-23",
+        "days": 7,
+        "class_name": "active"
+      },
+      {
+        "case_id": "active_20230420",
+        "start_date": "2023-04-20",
+        "days": 7,
+        "class_name": "active"
+      },
+      {
+        "case_id": "storm_20240507",
+        "start_date": "2024-05-07",
+        "days": 7,
+        "class_name": "storm"
+      },
+      {
+        "case_id": "storm_20251108",
+        "start_date": "2025-11-08",
+        "days": 7,
+        "class_name": "storm"
+      }
+    ],
+    "held_out_cases": [
+      {
+        "case_id": "quiet_20230125",
+        "start_date": "2023-01-25",
+        "days": 7,
+        "class_name": "quiet"
+      },
+      {
+        "case_id": "active_20230311",
+        "start_date": "2023-03-11",
+        "days": 7,
+        "class_name": "active"
+      },
+      {
+        "case_id": "storm_20241007",
+        "start_date": "2024-10-07",
+        "days": 7,
+        "class_name": "storm"
+      }
+    ],
+    "successful_cases": 17,
+    "failed_cases": 1
+  },
+  "production_thresholds": {
+    "active_nt": 35.0,
+    "storm_nt": 70.0
+  },
+  "calibration_selected_candidates": {
+    "active_nt": 15.0,
+    "storm_nt": 150.0,
+    "note": "Candidates are selected only from calibration cases and are not applied automatically."
+  },
+  "held_out_test": {
+    "production_thresholds": {
+      "active": {
+        "samples": 60128,
+        "positive_truth_samples": 11009,
+        "positive_prediction_samples": 5408,
+        "tp": 3821,
+        "tn": 47532,
+        "fp": 1587,
+        "fn": 7188,
+        "accuracy": 0.8540613358169239,
+        "balanced_accuracy": 0.6573851862052068,
+        "precision": 0.7065458579881657,
+        "recall": 0.34707966209464985,
+        "specificity": 0.9676907103157637,
+        "f1": 0.46549308643479326,
+        "false_alarm_rate": 0.03230928968423624,
+        "miss_rate": 0.6529203379053502
+      },
+      "storm": {
+        "samples": 60128,
+        "positive_truth_samples": 3960,
+        "positive_prediction_samples": 5408,
+        "tp": 2582,
+        "tn": 53342,
+        "fp": 2826,
+        "fn": 1378,
+        "accuracy": 0.9300824906865354,
+        "balanced_accuracy": 0.8008534281714741,
+        "precision": 0.47744082840236685,
+        "recall": 0.652020202020202,
+        "specificity": 0.949686654322746,
+        "f1": 0.5512382578992314,
+        "false_alarm_rate": 0.05031334567725395,
+        "miss_rate": 0.347979797979798
+      }
+    },
+    "calibration_selected_candidates": {
+      "active": {
+        "samples": 60128,
+        "positive_truth_samples": 11009,
+        "positive_prediction_samples": 6190,
+        "tp": 4432,
+        "tn": 47361,
+        "fp": 1758,
+        "fn": 6577,
+        "accuracy": 0.8613790580095796,
+        "balanced_accuracy": 0.6833945382976412,
+        "precision": 0.7159935379644589,
+        "recall": 0.4025797075120356,
+        "specificity": 0.9642093690832468,
+        "f1": 0.5153788010930868,
+        "false_alarm_rate": 0.03579063091675319,
+        "miss_rate": 0.5974202924879644
+      },
+      "storm": {
+        "samples": 60128,
+        "positive_truth_samples": 3960,
+        "positive_prediction_samples": 5408,
+        "tp": 2582,
+        "tn": 53342,
+        "fp": 2826,
+        "fn": 1378,
+        "accuracy": 0.9300824906865354,
+        "balanced_accuracy": 0.8008534281714741,
+        "precision": 0.47744082840236685,
+        "recall": 0.652020202020202,
+        "specificity": 0.949686654322746,
+        "f1": 0.5512382578992314,
+        "false_alarm_rate": 0.05031334567725395,
+        "miss_rate": 0.347979797979798
+      }
+    },
+    "coverage": {
+      "reference_mean": 1.0,
+      "kp_mean": 1.0,
+      "dst_mean": 0.0
+    },
+    "baseline": {
+      "mean_mae_nt": 62.812262098421876,
+      "mean_rmse_nt": 146.0067719281566,
+      "mean_p95_abs_nt": 420.2052030867356
+    }
+  },
+  "failures": [
+    {
+      "observatory": "BOU",
+      "case": {
+        "case_id": "active_20230223",
+        "start_date": "2023-02-23",
+        "days": 7,
+        "class_name": "active"
+      },
+      "error": "Too few valid samples."
+    }
+  ],
+  "runtime_seconds": 133.9600419140188
+}

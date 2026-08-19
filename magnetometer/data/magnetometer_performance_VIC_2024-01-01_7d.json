@@ -1,0 +1,99 @@
+{
+  "benchmark": {
+    "observatory": "VIC",
+    "start_date": "2024-01-01",
+    "days": 7,
+    "field": "f_nt",
+    "samples": 10080,
+    "valid_samples": 10080,
+    "expected_samples": 10080,
+    "completeness": 1.0,
+    "cadence_seconds": 60.0
+  },
+  "baseline_quality_nt": {
+    "bias": -0.09612837786399246,
+    "mae": 1.2624658644857152,
+    "rmse": 1.9384464631871856,
+    "rms": 1.9384464631871856,
+    "residual_std": 1.9360614725809058,
+    "median_absolute_error": 0.8080639222935133,
+    "p95_absolute_error": 3.7822745114608503,
+    "quiet_rms": 1.8801436159201457,
+    "quiet_mae": 1.2493900649492666
+  },
+  "activity": {
+    "quiet_fraction": 0.9991071428571429,
+    "unsettled_fraction": 0.0008928571428571428,
+    "active_or_higher_fraction": 0.0,
+    "storm_or_higher_fraction": 0.0,
+    "anomaly_fraction": 0.0,
+    "counts": {
+      "quiet": 10071,
+      "unsettled": 9,
+      "active": 0,
+      "minor_storm": 0,
+      "major_storm": 0,
+      "severe_storm": 0,
+      "anomaly": 0
+    }
+  },
+  "global_validation": {
+    "reference_samples": 10080,
+    "kp_available_samples": 10080,
+    "dst_available_samples": 0,
+    "active_event_metrics": {
+      "samples": 10080,
+      "tp": 0,
+      "tn": 9900,
+      "fp": 0,
+      "fn": 180,
+      "accuracy": 0.9821428571428571,
+      "balanced_accuracy": 0.5,
+      "precision": null,
+      "recall": 0.0,
+      "specificity": 1.0,
+      "f1": null,
+      "false_alarm_rate": 0.0,
+      "miss_rate": 1.0
+    },
+    "storm_event_metrics": {
+      "samples": 10080,
+      "tp": 0,
+      "tn": 10080,
+      "fp": 0,
+      "fn": 0,
+      "accuracy": 1.0,
+      "balanced_accuracy": null,
+      "precision": null,
+      "recall": null,
+      "specificity": 1.0,
+      "f1": null,
+      "false_alarm_rate": 0.0,
+      "miss_rate": null
+    }
+  },
+  "performance": {
+    "fetch_seconds": 3.0488708110060543,
+    "parse_seconds": 2.4053114260314032,
+    "analysis_seconds": 0.021633072989061475,
+    "global_index_seconds": 5.638257292041089,
+    "total_seconds": 11.114072602067608,
+    "analysis_samples_per_second": 465953.2191795794,
+    "analysis_samples_per_second_of_realtime": 27957193.150774766
+  },
+  "daily_rms_nt": {
+    "2024-01-01": 3.215177,
+    "2024-01-02": 1.929888,
+    "2024-01-03": 2.41175,
+    "2024-01-04": 1.300168,
+    "2024-01-05": 1.693593,
+    "2024-01-06": 1.057737,
+    "2024-01-07": 0.864378
+  },
+  "daily_rms_summary_nt": {
+    "mean": 1.7818129999999999,
+    "std": 0.7633588272062585,
+    "min": 0.864378,
+    "max": 3.215177
+  }
+}

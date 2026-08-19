@@ -1,0 +1,679 @@
+{
+  "detector": {
+    "active_events": 8,
+    "class_counts": {
+      "active": 818,
+      "anomaly": 0,
+      "major_storm": 133,
+      "minor_storm": 1080,
+      "quiet": 7884,
+      "severe_storm": 0,
+      "unknown": 0,
+      "unsettled": 165
+    },
+    "storm_events": 3,
+    "transition_count": 45,
+    "transitions": [
+      {
+        "from": "quiet",
+        "time": "2025-01-01T04:51:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-01T05:02:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-01T05:14:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-01T05:15:00+00:00",
+        "to": "active"
+      },
+      {
+        "from": "active",
+        "time": "2025-01-01T06:13:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-01T08:37:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-01T08:45:00+00:00",
+        "to": "active"
+      },
+      {
+        "from": "active",
+        "time": "2025-01-01T09:56:00+00:00",
+        "to": "minor_storm"
+      },
+      {
+        "from": "minor_storm",
+        "time": "2025-01-01T10:04:00+00:00",
+        "to": "major_storm"
+      },
+      {
+        "from": "major_storm",
+        "time": "2025-01-01T10:46:00+00:00",
+        "to": "minor_storm"
+      },
+      {
+        "from": "minor_storm",
+        "time": "2025-01-01T12:44:00+00:00",
+        "to": "major_storm"
+      },
+      {
+        "from": "major_storm",
+        "time": "2025-01-01T13:42:00+00:00",
+        "to": "minor_storm"
+      },
+      {
+        "from": "minor_storm",
+        "time": "2025-01-01T14:16:00+00:00",
+        "to": "major_storm"
+      },
+      {
+        "from": "major_storm",
+        "time": "2025-01-01T14:49:00+00:00",
+        "to": "minor_storm"
+      },
+      {
+        "from": "minor_storm",
+        "time": "2025-01-01T21:51:00+00:00",
+        "to": "active"
+      },
+      {
+        "from": "active",
+        "time": "2025-01-01T21:57:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-01T23:01:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-01T23:27:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-02T09:26:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-02T09:37:00+00:00",
+        "to": "active"
+      },
+      {
+        "from": "active",
+        "time": "2025-01-02T10:36:00+00:00",
+        "to": "minor_storm"
+      },
+      {
+        "from": "minor_storm",
+        "time": "2025-01-02T15:51:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-04T05:16:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-04T05:22:00+00:00",
+        "to": "active"
+      },
+      {
+        "from": "active",
+        "time": "2025-01-04T07:07:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-04T07:24:00+00:00",
+        "to": "active"
+      },
+      {
+        "from": "active",
+        "time": "2025-01-04T10:44:00+00:00",
+        "to": "minor_storm"
+      },
+      {
+        "from": "minor_storm",
+        "time": "2025-01-04T13:47:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-04T15:59:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-04T16:24:00+00:00",
+        "to": "active"
+      },
+      {
+        "from": "active",
+        "time": "2025-01-04T17:39:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-04T17:46:00+00:00",
+        "to": "active"
+      },
+      {
+        "from": "active",
+        "time": "2025-01-04T19:10:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-04T20:47:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-04T21:16:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-05T13:50:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-05T13:59:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-05T17:48:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-05T18:03:00+00:00",
+        "to": "active"
+      },
+      {
+        "from": "active",
+        "time": "2025-01-05T18:58:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-06T06:00:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-06T06:14:00+00:00",
+        "to": "quiet"
+      },
+      {
+        "from": "quiet",
+        "time": "2025-01-07T08:14:00+00:00",
+        "to": "unsettled"
+      },
+      {
+        "from": "unsettled",
+        "time": "2025-01-07T08:24:00+00:00",
+        "to": "active"
+      },
+      {
+        "from": "active",
+        "time": "2025-01-07T10:09:00+00:00",
+        "to": "quiet"
+      }
+    ]
+  },
+  "events": {
+    "detected_active": [
+      {
+        "class": "active",
+        "duration_minutes": 58.0,
+        "end": "2025-01-01T06:12:00+00:00",
+        "event": 1,
+        "peak_abs_residual_nt": 14.722624695328705,
+        "peak_signed_residual_nt": 14.722624695328705,
+        "start": "2025-01-01T05:15:00+00:00"
+      },
+      {
+        "class": "minor_storm",
+        "duration_minutes": 792.0,
+        "end": "2025-01-01T21:56:00+00:00",
+        "event": 2,
+        "peak_abs_residual_nt": 215.94896438643627,
+        "peak_signed_residual_nt": -215.94896438643627,
+        "start": "2025-01-01T08:45:00+00:00"
+      },
+      {
+        "class": "minor_storm",
+        "duration_minutes": 276.0,
+        "end": "2025-01-02T14:12:00+00:00",
+        "event": 3,
+        "peak_abs_residual_nt": 51.89320468323422,
+        "peak_signed_residual_nt": -51.89320468323422,
+        "start": "2025-01-02T09:37:00+00:00"
+      },
+      {
+        "class": "minor_storm",
+        "duration_minutes": 45.0,
+        "end": "2025-01-02T15:49:00+00:00",
+        "event": 4,
+        "peak_abs_residual_nt": 16.891691623262886,
+        "peak_signed_residual_nt": -16.891691623262886,
+        "start": "2025-01-02T15:05:00+00:00"
+      },
+      {
+        "class": "active",
+        "duration_minutes": 445.0,
+        "end": "2025-01-04T12:46:00+00:00",
+        "event": 5,
+        "peak_abs_residual_nt": 53.11775602702255,
+        "peak_signed_residual_nt": 53.11775602702255,
+        "start": "2025-01-04T05:22:00+00:00"
+      },
+      {
+        "class": "active",
+        "duration_minutes": 166.0,
+        "end": "2025-01-04T19:09:00+00:00",
+        "event": 6,
+        "peak_abs_residual_nt": 16.181600870950206,
+        "peak_signed_residual_nt": -16.181600870950206,
+        "start": "2025-01-04T16:24:00+00:00"
+      },
+      {
+        "class": "active",
+        "duration_minutes": 55.0,
+        "end": "2025-01-05T18:57:00+00:00",
+        "event": 7,
+        "peak_abs_residual_nt": 17.285501220809238,
+        "peak_signed_residual_nt": -17.285501220809238,
+        "start": "2025-01-05T18:03:00+00:00"
+      },
+      {
+        "class": "active",
+        "duration_minutes": 105.0,
+        "end": "2025-01-07T10:08:00+00:00",
+        "event": 8,
+        "peak_abs_residual_nt": 24.63760428167734,
+        "peak_signed_residual_nt": -24.63760428167734,
+        "start": "2025-01-07T08:24:00+00:00"
+      }
+    ],
+    "detected_storm": [
+      {
+        "class": "minor_storm",
+        "duration_minutes": 715.0,
+        "end": "2025-01-01T21:50:00+00:00",
+        "event": 1,
+        "peak_abs_residual_nt": 215.94896438643627,
+        "peak_signed_residual_nt": -215.94896438643627,
+        "start": "2025-01-01T09:56:00+00:00"
+      },
+      {
+        "class": "minor_storm",
+        "duration_minutes": 315.0,
+        "end": "2025-01-02T15:50:00+00:00",
+        "event": 2,
+        "peak_abs_residual_nt": 47.475965647099656,
+        "peak_signed_residual_nt": -47.475965647099656,
+        "start": "2025-01-02T10:36:00+00:00"
+      },
+      {
+        "class": "minor_storm",
+        "duration_minutes": 183.0,
+        "end": "2025-01-04T13:46:00+00:00",
+        "event": 3,
+        "peak_abs_residual_nt": 26.679467973386636,
+        "peak_signed_residual_nt": -26.679467973386636,
+        "start": "2025-01-04T10:44:00+00:00"
+      }
+    ],
+    "reference_active": [
+      {
+        "class": "active",
+        "duration_minutes": 1440.0,
+        "end": "2025-01-01T23:59:00+00:00",
+        "event": 1,
+        "peak_abs_residual_nt": 215.94896438643627,
+        "peak_signed_residual_nt": -215.94896438643627,
+        "start": "2025-01-01T00:00:00+00:00"
+      },
+      {
+        "class": "active",
+        "duration_minutes": 360.0,
+        "end": "2025-01-02T14:59:00+00:00",
+        "event": 2,
+        "peak_abs_residual_nt": 51.89320468323422,
+        "peak_signed_residual_nt": -51.89320468323422,
+        "start": "2025-01-02T09:00:00+00:00"
+      },
+      {
+        "class": "active",
+        "duration_minutes": 1080.0,
+        "end": "2025-01-04T20:59:00+00:00",
+        "event": 3,
+        "peak_abs_residual_nt": 53.11775602702255,
+        "peak_signed_residual_nt": 53.11775602702255,
+        "start": "2025-01-04T03:00:00+00:00"
+      },
+      {
+        "class": "active",
+        "duration_minutes": 360.0,
+        "end": "2025-01-05T20:59:00+00:00",
+        "event": 4,
+        "peak_abs_residual_nt": 18.67623157496564,
+        "peak_signed_residual_nt": -18.67623157496564,
+        "start": "2025-01-05T15:00:00+00:00"
+      }
+    ],
+    "reference_storm": [
+      {
+        "class": "storm",
+        "duration_minutes": 720.0,
+        "end": "2025-01-01T20:59:00+00:00",
+        "event": 1,
+        "peak_abs_residual_nt": 215.94896438643627,
+        "peak_signed_residual_nt": -215.94896438643627,
+        "start": "2025-01-01T09:00:00+00:00"
+      }
+    ]
+  },
+  "generated_at_utc": "2026-08-19T17:06:46.534078+00:00",
+  "production_scoring": {
+    "active": {
+      "event_level": {
+        "f1": 0.6666666666666666,
+        "false_positive_events": 4,
+        "matched_events": 4,
+        "matches": [
+          {
+            "overlap_seconds": 47520.0,
+            "predicted_index": 1,
+            "reference_index": 0
+          },
+          {
+            "overlap_seconds": 26700.0,
+            "predicted_index": 4,
+            "reference_index": 2
+          },
+          {
+            "overlap_seconds": 16560.0,
+            "predicted_index": 2,
+            "reference_index": 1
+          },
+          {
+            "overlap_seconds": 3300.0,
+            "predicted_index": 6,
+            "reference_index": 3
+          }
+        ],
+        "missed_events": 0,
+        "precision": 0.5,
+        "predicted_events": 8,
+        "recall": 1.0,
+        "reference_events": 4
+      },
+      "sample_level": {
+        "accuracy": 0.8447420634920635,
+        "balanced_accuracy": 0.7624392492039551,
+        "f1": 0.6837744998989695,
+        "false_alarm_rate": 0.02806267806267806,
+        "fn": 1368,
+        "fp": 197,
+        "miss_rate": 0.4470588235294118,
+        "positive_prediction_samples": 1889,
+        "positive_truth_samples": 3060,
+        "precision": 0.89571201694018,
+        "recall": 0.5529411764705883,
+        "samples": 10080,
+        "specificity": 0.971937321937322,
+        "tn": 6823,
+        "tp": 1692
+      },
+      "threshold_nt": 15.0
+    },
+    "storm": {
+      "event_level": {
+        "f1": 0.5,
+        "false_positive_events": 2,
+        "matched_events": 1,
+        "matches": [
+          {
+            "overlap_seconds": 39840.0,
+            "predicted_index": 0,
+            "reference_index": 0
+          }
+        ],
+        "missed_events": 0,
+        "precision": 0.3333333333333333,
+        "predicted_events": 3,
+        "recall": 1.0,
+        "reference_events": 1
+      },
+      "sample_level": {
+        "accuracy": 0.9399801587301587,
+        "balanced_accuracy": 0.931784188034188,
+        "f1": 0.6870150025866528,
+        "false_alarm_rate": 0.058653846153846154,
+        "fn": 56,
+        "fp": 549,
+        "miss_rate": 0.07777777777777778,
+        "positive_prediction_samples": 1213,
+        "positive_truth_samples": 720,
+        "precision": 0.5474031327287716,
+        "recall": 0.9222222222222223,
+        "samples": 10080,
+        "specificity": 0.9413461538461538,
+        "tn": 8811,
+        "tp": 664
+      },
+      "threshold_nt": 35.0
+    }
+  },
+  "reference": {
+    "class_counts": {
+      "active": 2340,
+      "quiet": 7020,
+      "storm": 720,
+      "unknown": 0
+    },
+    "dst_coverage": 0.0,
+    "errors": [],
+    "kp_coverage": 1.0,
+    "overall_coverage": 1.0
+  },
+  "reference_comparison": {
+    "event_level": {
+      "active": {
+        "f1": 0.6666666666666666,
+        "false_positive_events": 4,
+        "matched_events": 4,
+        "matches": [
+          {
+            "overlap_seconds": 47520.0,
+            "predicted_index": 1,
+            "reference_index": 0
+          },
+          {
+            "overlap_seconds": 26700.0,
+            "predicted_index": 4,
+            "reference_index": 2
+          },
+          {
+            "overlap_seconds": 16560.0,
+            "predicted_index": 2,
+            "reference_index": 1
+          },
+          {
+            "overlap_seconds": 3300.0,
+            "predicted_index": 6,
+            "reference_index": 3
+          }
+        ],
+        "missed_events": 0,
+        "precision": 0.5,
+        "predicted_events": 8,
+        "recall": 1.0,
+        "reference_events": 4
+      },
+      "storm": {
+        "f1": 0.5,
+        "false_positive_events": 2,
+        "matched_events": 1,
+        "matches": [
+          {
+            "overlap_seconds": 39840.0,
+            "predicted_index": 0,
+            "reference_index": 0
+          }
+        ],
+        "missed_events": 0,
+        "precision": 0.3333333333333333,
+        "predicted_events": 3,
+        "recall": 1.0,
+        "reference_events": 1
+      }
+    },
+    "mutually_exclusive_proxy_classes": {
+      "active": {
+        "accuracy": 0.817063492063492,
+        "balanced_accuracy": 0.6299840985887497,
+        "f1": 0.4160861304623179,
+        "false_alarm_rate": 0.020801033591731265,
+        "fn": 1683,
+        "fp": 161,
+        "miss_rate": 0.7192307692307692,
+        "positive_prediction_samples": 818,
+        "positive_truth_samples": 2340,
+        "precision": 0.8031784841075794,
+        "recall": 0.28076923076923077,
+        "samples": 10080,
+        "specificity": 0.9791989664082688,
+        "tn": 7579,
+        "tp": 657
+      },
+      "quiet": {
+        "accuracy": 0.8523809523809524,
+        "balanced_accuracy": 0.7856209150326798,
+        "f1": 0.9001610305958133,
+        "false_alarm_rate": 0.3843137254901961,
+        "fn": 312,
+        "fp": 1176,
+        "miss_rate": 0.044444444444444446,
+        "positive_prediction_samples": 7884,
+        "positive_truth_samples": 7020,
+        "precision": 0.8508371385083714,
+        "recall": 0.9555555555555556,
+        "samples": 10080,
+        "specificity": 0.615686274509804,
+        "tn": 1884,
+        "tp": 6708
+      },
+      "storm": {
+        "accuracy": 0.9285714285714286,
+        "balanced_accuracy": 0.5,
+        "f1": null,
+        "false_alarm_rate": 0.0,
+        "fn": 720,
+        "fp": 0,
+        "miss_rate": 1.0,
+        "positive_prediction_samples": 0,
+        "positive_truth_samples": 720,
+        "precision": null,
+        "recall": 0.0,
+        "samples": 10080,
+        "specificity": 1.0,
+        "tn": 9360,
+        "tp": 0
+      }
+    },
+    "sample_level": {
+      "active": {
+        "accuracy": 0.8447420634920635,
+        "balanced_accuracy": 0.7624392492039551,
+        "f1": 0.6837744998989695,
+        "false_alarm_rate": 0.02806267806267806,
+        "fn": 1368,
+        "fp": 197,
+        "miss_rate": 0.4470588235294118,
+        "positive_prediction_samples": 1889,
+        "positive_truth_samples": 3060,
+        "precision": 0.89571201694018,
+        "recall": 0.5529411764705883,
+        "samples": 10080,
+        "specificity": 0.971937321937322,
+        "tn": 6823,
+        "tp": 1692
+      },
+      "storm": {
+        "accuracy": 0.9399801587301587,
+        "balanced_accuracy": 0.931784188034188,
+        "f1": 0.6870150025866528,
+        "false_alarm_rate": 0.058653846153846154,
+        "fn": 56,
+        "fp": 549,
+        "miss_rate": 0.07777777777777778,
+        "positive_prediction_samples": 1213,
+        "positive_truth_samples": 720,
+        "precision": 0.5474031327287716,
+        "recall": 0.9222222222222223,
+        "samples": 10080,
+        "specificity": 0.9413461538461538,
+        "tn": 8811,
+        "tp": 664
+      }
+    }
+  },
+  "reference_warning": "Kp/Dst thresholds are reference proxies, not local geomagnetic ground truth. These metrics are diagnostic and do not certify the detector.",
+  "residual_quality": {
+    "mae_nt": 5.8093923453796155,
+    "max_abs_nt": 215.94896438643627,
+    "max_abs_step_nt": 54.713010185194435,
+    "max_nt": 124.78759801213164,
+    "mean_nt": -0.3470007669510424,
+    "median_nt": -0.08223465706396382,
+    "min_nt": -215.94896438643627,
+    "p95_abs_nt": 21.676733453953055,
+    "p99_abs_nt": 59.80600471603979,
+    "rmse_nt": 13.455152416362534,
+    "std_nt": 13.450677195415922
+  },
+  "schema_version": 1,
+  "thresholds": {
+    "active_nt": 15.0,
+    "anomaly_delta_nt": 100.0,
+    "major_storm_nt": 100.0,
+    "severe_storm_nt": 200.0,
+    "storm_nt": 35.0,
+    "unsettled_nt": 10.0
+  },
+  "tool": "detector_diagnostic",
+  "window": {
+    "actual_end": "2025-01-07T23:59:00+00:00",
+    "actual_start": "2025-01-01T00:00:00+00:00",
+    "cadence_seconds": 60.0,
+    "completeness": 1.0,
+    "observatory": "VIC",
+    "requested_days": 7,
+    "requested_start_date": "2025-01-01",
+    "samples": 10080,
+    "valid_samples": 10080
+  }
+}

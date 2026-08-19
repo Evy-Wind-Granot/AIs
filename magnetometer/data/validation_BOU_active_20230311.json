@@ -1,0 +1,93 @@
+{
+  "observatory": "BOU",
+  "case": {
+    "case_id": "active_20230311",
+    "start_date": "2023-03-11",
+    "days": 7,
+    "class_name": "active"
+  },
+  "samples": 10080,
+  "valid_samples": 9738,
+  "completeness": 0.9660714285714286,
+  "cadence_seconds": 60.0,
+  "reference_coverage": 1.0,
+  "kp_coverage": 1.0,
+  "dst_coverage": 0.0,
+  "baseline_quality_nt": {
+    "mae": 1.2805525534357252,
+    "rmse": 1.9692424773199901,
+    "bias": -0.032080898596525756,
+    "median_absolute_error": 0.8009511746931821,
+    "p95_absolute_error": 3.9158594491262186
+  },
+  "scores": {
+    "active": {
+      "threshold_nt": 35.0,
+      "sample_level": {
+        "samples": 9738,
+        "positive_truth_samples": 749,
+        "positive_prediction_samples": 0,
+        "tp": 0,
+        "tn": 8989,
+        "fp": 0,
+        "fn": 749,
+        "accuracy": 0.9230848223454509,
+        "balanced_accuracy": 0.5,
+        "precision": null,
+        "recall": 0.0,
+        "specificity": 1.0,
+        "f1": null,
+        "false_alarm_rate": 0.0,
+        "miss_rate": 1.0
+      },
+      "event_level": {
+        "reference_events": 2,
+        "predicted_events": 0,
+        "matched_events": 0,
+        "missed_events": 2,
+        "false_positive_events": 0,
+        "precision": null,
+        "recall": 0.0,
+        "f1": null,
+        "median_reference_start_offset_seconds": null,
+        "median_absolute_reference_start_offset_seconds": null,
+        "mean_absolute_duration_error_seconds": null,
+        "matches": []
+      }
+    },
+    "storm": {
+      "threshold_nt": 70.0,
+      "sample_level": {
+        "samples": 9738,
+        "positive_truth_samples": 0,
+        "positive_prediction_samples": 0,
+        "tp": 0,
+        "tn": 9738,
+        "fp": 0,
+        "fn": 0,
+        "accuracy": 1.0,
+        "balanced_accuracy": null,
+        "precision": null,
+        "recall": null,
+        "specificity": 1.0,
+        "f1": null,
+        "false_alarm_rate": 0.0,
+        "miss_rate": null
+      },
+      "event_level": {
+        "reference_events": 0,
+        "predicted_events": 0,
+        "matched_events": 0,
+        "missed_events": 0,
+        "false_positive_events": 0,
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "median_reference_start_offset_seconds": null,
+        "median_absolute_reference_start_offset_seconds": null,
+        "mean_absolute_duration_error_seconds": null,
+        "matches": []
+      }
+    }
+  }
+}

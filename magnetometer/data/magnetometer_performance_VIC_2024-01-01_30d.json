@@ -1,0 +1,122 @@
+{
+  "benchmark": {
+    "observatory": "VIC",
+    "start_date": "2024-01-01",
+    "days": 30,
+    "field": "f_nt",
+    "samples": 43200,
+    "valid_samples": 43200,
+    "expected_samples": 43200,
+    "completeness": 1.0,
+    "cadence_seconds": 60.0
+  },
+  "baseline_quality_nt": {
+    "bias": -0.029862992060898923,
+    "mae": 1.2108669984316087,
+    "rmse": 1.7464749508330104,
+    "rms": 1.7464749508330104,
+    "residual_std": 1.7462196183734557,
+    "median_absolute_error": 0.8637256693109521,
+    "p95_absolute_error": 3.361442454287316,
+    "quiet_rms": 1.7315065188063938,
+    "quiet_mae": 1.2078073154669706
+  },
+  "activity": {
+    "quiet_fraction": 0.9997916666666666,
+    "unsettled_fraction": 0.00020833333333333335,
+    "active_or_higher_fraction": 0.0,
+    "storm_or_higher_fraction": 0.0,
+    "anomaly_fraction": 0.0,
+    "counts": {
+      "quiet": 43191,
+      "unsettled": 9,
+      "active": 0,
+      "minor_storm": 0,
+      "major_storm": 0,
+      "severe_storm": 0,
+      "anomaly": 0
+    }
+  },
+  "global_validation": {
+    "reference_samples": 43200,
+    "kp_available_samples": 43200,
+    "dst_available_samples": 0,
+    "active_event_metrics": {
+      "samples": 43200,
+      "tp": 0,
+      "tn": 43020,
+      "fp": 0,
+      "fn": 180,
+      "accuracy": 0.9958333333333333,
+      "balanced_accuracy": 0.5,
+      "precision": null,
+      "recall": 0.0,
+      "specificity": 1.0,
+      "f1": null,
+      "false_alarm_rate": 0.0,
+      "miss_rate": 1.0
+    },
+    "storm_event_metrics": {
+      "samples": 43200,
+      "tp": 0,
+      "tn": 43200,
+      "fp": 0,
+      "fn": 0,
+      "accuracy": 1.0,
+      "balanced_accuracy": null,
+      "precision": null,
+      "recall": null,
+      "specificity": 1.0,
+      "f1": null,
+      "false_alarm_rate": 0.0,
+      "miss_rate": null
+    }
+  },
+  "performance": {
+    "fetch_seconds": 6.925310718012042,
+    "parse_seconds": 10.170435554988217,
+    "analysis_seconds": 0.09647752600722015,
+    "global_index_seconds": 3.3409252000274137,
+    "total_seconds": 20.533148999034893,
+    "analysis_samples_per_second": 447772.67606102396,
+    "analysis_samples_per_second_of_realtime": 26866360.563661437
+  },
+  "daily_rms_nt": {
+    "2024-01-01": 3.224708,
+    "2024-01-02": 1.929888,
+    "2024-01-03": 2.41175,
+    "2024-01-04": 1.300168,
+    "2024-01-05": 1.693593,
+    "2024-01-06": 1.057737,
+    "2024-01-07": 0.86563,
+    "2024-01-08": 1.086831,
+    "2024-01-09": 1.583704,
+    "2024-01-10": 1.887566,
+    "2024-01-11": 1.535025,
+    "2024-01-12": 1.051054,
+    "2024-01-13": 0.764352,
+    "2024-01-14": 1.606871,
+    "2024-01-15": 1.151715,
+    "2024-01-16": 1.241795,
+    "2024-01-17": 1.111713,
+    "2024-01-18": 1.565348,
+    "2024-01-19": 1.976032,
+    "2024-01-20": 1.78365,
+    "2024-01-21": 2.48266,
+    "2024-01-22": 2.379557,
+    "2024-01-23": 1.39188,
+    "2024-01-24": 2.823114,
+    "2024-01-25": 1.549699,
+    "2024-01-26": 1.433584,
+    "2024-01-27": 1.501738,
+    "2024-01-28": 1.595362,
+    "2024-01-29": 1.567727,
+    "2024-01-30": 2.042116
+  },
+  "daily_rms_summary_nt": {
+    "mean": 1.6532189,
+    "std": 0.5630645959442161,
+    "min": 0.764352,
+    "max": 3.224708
+  }
+}

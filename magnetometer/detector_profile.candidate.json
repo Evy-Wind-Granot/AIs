@@ -1,0 +1,201 @@
+{
+  "status": "candidate",
+  "profile": {
+    "active_nt": 15.0,
+    "storm_nt": 50.0,
+    "unsettled_nt": 10.0,
+    "major_nt": 100.0,
+    "severe_nt": 200.0,
+    "active_slow_ratio": 0.5,
+    "active_slow_3h_ratio": 0.4,
+    "active_upper_ratio": 0.85,
+    "active_fast_ratio": 1.1,
+    "active_medium_slow_ratio": 0.3,
+    "active_medium_upper_ratio": 0.25,
+    "storm_fast_ratio": 1.6,
+    "storm_fast_medium_ratio": 0.45,
+    "storm_upper_ratio": 1.1,
+    "storm_upper_medium_ratio": 0.7,
+    "storm_medium_ratio": 0.8,
+    "storm_release_ratio": 0.75,
+    "active_on_minutes": 2.0,
+    "active_off_minutes": 45.0,
+    "storm_on_minutes": 5.0,
+    "storm_off_minutes": 90.0,
+    "major_upper_ratio": 0.9,
+    "major_fast_ratio": 1.15,
+    "major_medium_ratio": 0.8,
+    "severe_upper_ratio": 0.9,
+    "severe_fast_ratio": 1.1,
+    "severe_medium_ratio": 0.8
+  },
+  "selection": {
+    "method": "chronological coordinate descent over cached causal features",
+    "calibration_years": [
+      2022,
+      2023
+    ],
+    "validation_years": [
+      2024
+    ],
+    "final_test_years": [
+      2025
+    ],
+    "final_test_used": false
+  },
+  "calibration_score": {
+    "active": {
+      "tp": 49770,
+      "tn": 830571,
+      "fp": 24642,
+      "fn": 85483,
+      "precision": 0.6688437348814708,
+      "recall": 0.3679770504166266,
+      "f1": 0.4747573510123292,
+      "far": 0.02881387443829783
+    },
+    "storm": {
+      "tp": 4379,
+      "tn": 969451,
+      "fp": 7034,
+      "fn": 9602,
+      "precision": 0.3836852711819855,
+      "recall": 0.31321078606680497,
+      "f1": 0.3448846184137985,
+      "far": 0.007203387660844765
+    }
+  },
+  "validation_score": {
+    "active": {
+      "tp": 35262,
+      "tn": 487821,
+      "fp": 13759,
+      "fn": 44216,
+      "precision": 0.7193243711878583,
+      "recall": 0.4436699464002617,
+      "f1": 0.5488291737678892,
+      "far": 0.027431317038159417
+    },
+    "storm": {
+      "tp": 9558,
+      "tn": 554824,
+      "fp": 7532,
+      "fn": 9144,
+      "precision": 0.5592744294909303,
+      "recall": 0.5110683349374399,
+      "f1": 0.5340858292355833,
+      "far": 0.013393650996877423
+    }
+  },
+  "calibration_score_event_level": {
+    "active": {
+      "reference_events": 202,
+      "predicted_events": 467,
+      "matched_events": 142,
+      "precision": 0.30406852248394006,
+      "recall": 0.7029702970297029,
+      "f1": 0.42451420029895365
+    },
+    "storm": {
+      "reference_events": 35,
+      "predicted_events": 33,
+      "matched_events": 13,
+      "precision": 0.3939393939393939,
+      "recall": 0.37142857142857144,
+      "f1": 0.3823529411764706
+    }
+  },
+  "validation_score_event_level": {
+    "active": {
+      "reference_events": 103,
+      "predicted_events": 224,
+      "matched_events": 79,
+      "precision": 0.35267857142857145,
+      "recall": 0.7669902912621359,
+      "f1": 0.4831804281345565
+    },
+    "storm": {
+      "reference_events": 30,
+      "predicted_events": 23,
+      "matched_events": 16,
+      "precision": 0.6956521739130435,
+      "recall": 0.5333333333333333,
+      "f1": 0.6037735849056605
+    }
+  },
+  "validation_floors": {
+    "min_storm_precision": 0.7,
+    "min_storm_recall": 0.6,
+    "min_storm_f1": 0.6,
+    "max_storm_far": 0.05,
+    "note": "matches production_grade_validation.release_gate; storm-gated only, sample-level. Active and event-level scores are reported for diagnostics and are not gating."
+  },
+  "passed_validation": false,
+  "failed_cases": [
+    {
+      "observatory": "VIC",
+      "case": {
+        "case_id": "calibration_active_20230228",
+        "center_date": "2023-02-28",
+        "start_date": "2023-02-25",
+        "days": 7,
+        "class_name": "active",
+        "year": 2023,
+        "split": "calibration"
+      },
+      "error": "Too few valid samples: 2277/10080 (22.6%)."
+    },
+    {
+      "observatory": "VIC",
+      "case": {
+        "case_id": "calibration_storm_20230227",
+        "center_date": "2023-02-27",
+        "start_date": "2023-02-24",
+        "days": 7,
+        "class_name": "storm",
+        "year": 2023,
+        "split": "calibration"
+      },
+      "error": "Too few valid samples: 900/10080 (8.9%)."
+    },
+    {
+      "observatory": "VIC",
+      "case": {
+        "case_id": "calibration_active_20230902",
+        "center_date": "2023-09-02",
+        "start_date": "2023-08-30",
+        "days": 7,
+        "class_name": "active",
+        "year": 2023,
+        "split": "calibration"
+      },
+      "error": "Too few valid samples: 0/10080 (0.0%)."
+    },
+    {
+      "observatory": "BOU",
+      "case": {
+        "case_id": "calibration_storm_20230227",
+        "center_date": "2023-02-27",
+        "start_date": "2023-02-24",
+        "days": 7,
+        "class_name": "storm",
+        "year": 2023,
+        "split": "calibration"
+      },
+      "error": "Too few valid samples: 7/10080 (0.1%)."
+    },
+    {
+      "observatory": "BOU",
+      "case": {
+        "case_id": "calibration_active_20230228",
+        "center_date": "2023-02-28",
+        "start_date": "2023-02-25",
+        "days": 7,
+        "class_name": "active",
+        "year": 2023,
+        "split": "calibration"
+      },
+      "error": "Too few valid samples: 7/10080 (0.1%)."
+    }
+  ]
+}

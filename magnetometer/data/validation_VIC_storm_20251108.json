@@ -1,0 +1,131 @@
+{
+  "observatory": "VIC",
+  "case": {
+    "case_id": "storm_20251108",
+    "start_date": "2025-11-08",
+    "days": 7,
+    "class_name": "storm"
+  },
+  "samples": 10080,
+  "valid_samples": 10080,
+  "completeness": 1.0,
+  "cadence_seconds": 60.0,
+  "reference_coverage": 1.0,
+  "kp_coverage": 1.0,
+  "dst_coverage": 0.0,
+  "baseline_quality_nt": {
+    "mae": 75.00417387289723,
+    "rmse": 157.0930545765758,
+    "bias": 60.398548806237386,
+    "median_absolute_error": 1.9853569978731684,
+    "p95_absolute_error": 414.7411969274198
+  },
+  "scores": {
+    "active": {
+      "threshold_nt": 35.0,
+      "sample_level": {
+        "samples": 10080,
+        "positive_truth_samples": 2880,
+        "positive_prediction_samples": 2702,
+        "tp": 2088,
+        "tn": 6586,
+        "fp": 614,
+        "fn": 792,
+        "accuracy": 0.8605158730158731,
+        "balanced_accuracy": 0.8198611111111112,
+        "precision": 0.7727609178386381,
+        "recall": 0.725,
+        "specificity": 0.9147222222222222,
+        "f1": 0.7481189537800073,
+        "false_alarm_rate": 0.08527777777777777,
+        "miss_rate": 0.275
+      },
+      "event_level": {
+        "reference_events": 3,
+        "predicted_events": 4,
+        "matched_events": 2,
+        "missed_events": 1,
+        "false_positive_events": 2,
+        "precision": 0.5,
+        "recall": 0.6666666666666666,
+        "f1": 0.5714285714285715,
+        "median_reference_start_offset_seconds": 23460.0,
+        "median_absolute_reference_start_offset_seconds": 23460.0,
+        "mean_absolute_duration_error_seconds": 16680.0,
+        "matches": [
+          {
+            "predicted_index": 3,
+            "reference_index": 2,
+            "overlap_seconds": 119760.0,
+            "reference_start_offset_seconds": 20640.0,
+            "predicted_duration_seconds": 145800.0,
+            "reference_duration_seconds": 140400.0,
+            "duration_error_seconds": 5400.0
+          },
+          {
+            "predicted_index": 1,
+            "reference_index": 0,
+            "overlap_seconds": 4440.0,
+            "reference_start_offset_seconds": 26280.0,
+            "predicted_duration_seconds": 4440.0,
+            "reference_duration_seconds": 32400.0,
+            "duration_error_seconds": -27960.0
+          }
+        ]
+      }
+    },
+    "storm": {
+      "threshold_nt": 70.0,
+      "sample_level": {
+        "samples": 10080,
+        "positive_truth_samples": 1440,
+        "positive_prediction_samples": 2485,
+        "tp": 1038,
+        "tn": 7193,
+        "fp": 1447,
+        "fn": 402,
+        "accuracy": 0.8165674603174603,
+        "balanced_accuracy": 0.7766782407407407,
+        "precision": 0.41770623742454727,
+        "recall": 0.7208333333333333,
+        "specificity": 0.8325231481481481,
+        "f1": 0.5289171974522292,
+        "false_alarm_rate": 0.16747685185185185,
+        "miss_rate": 0.2791666666666667
+      },
+      "event_level": {
+        "reference_events": 3,
+        "predicted_events": 3,
+        "matched_events": 2,
+        "missed_events": 1,
+        "false_positive_events": 1,
+        "precision": 0.6666666666666666,
+        "recall": 0.6666666666666666,
+        "f1": 0.6666666666666666,
+        "median_reference_start_offset_seconds": -26280.0,
+        "median_absolute_reference_start_offset_seconds": 30000.0,
+        "mean_absolute_duration_error_seconds": 65100.0,
+        "matches": [
+          {
+            "predicted_index": 2,
+            "reference_index": 2,
+            "overlap_seconds": 32400.0,
+            "reference_start_offset_seconds": -56280.0,
+            "predicted_duration_seconds": 133680.0,
+            "reference_duration_seconds": 32400.0,
+            "duration_error_seconds": 101280.0
+          },
+          {
+            "predicted_index": 0,
+            "reference_index": 1,
+            "overlap_seconds": 14280.0,
+            "reference_start_offset_seconds": 3720.0,
+            "predicted_duration_seconds": 14280.0,
+            "reference_duration_seconds": 43200.0,
+            "duration_error_seconds": -28920.0
+          }
+        ]
+      }
+    }
+  }
+}

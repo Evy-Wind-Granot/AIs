@@ -1,0 +1,122 @@
+{
+  "observatory": "VIC",
+  "case": {
+    "case_id": "storm_20240507",
+    "start_date": "2024-05-07",
+    "days": 7,
+    "class_name": "storm"
+  },
+  "samples": 10080,
+  "valid_samples": 10080,
+  "completeness": 1.0,
+  "cadence_seconds": 60.0,
+  "reference_coverage": 1.0,
+  "kp_coverage": 1.0,
+  "dst_coverage": 0.0,
+  "baseline_quality_nt": {
+    "mae": 61.533452758402255,
+    "rmse": 142.04789211129562,
+    "bias": 23.645688689954522,
+    "median_absolute_error": 2.786527718668367,
+    "p95_absolute_error": 338.36800543361454
+  },
+  "scores": {
+    "active": {
+      "threshold_nt": 35.0,
+      "sample_level": {
+        "samples": 10080,
+        "positive_truth_samples": 3240,
+        "positive_prediction_samples": 2384,
+        "tp": 2204,
+        "tn": 6660,
+        "fp": 180,
+        "fn": 1036,
+        "accuracy": 0.8793650793650793,
+        "balanced_accuracy": 0.8269655620532814,
+        "precision": 0.924496644295302,
+        "recall": 0.6802469135802469,
+        "specificity": 0.9736842105263158,
+        "f1": 0.7837837837837837,
+        "false_alarm_rate": 0.02631578947368421,
+        "miss_rate": 0.3197530864197531
+      },
+      "event_level": {
+        "reference_events": 1,
+        "predicted_events": 3,
+        "matched_events": 1,
+        "missed_events": 0,
+        "false_positive_events": 2,
+        "precision": 0.3333333333333333,
+        "recall": 1.0,
+        "f1": 0.5,
+        "median_reference_start_offset_seconds": 3720.0,
+        "median_absolute_reference_start_offset_seconds": 3720.0,
+        "mean_absolute_duration_error_seconds": 77880.0,
+        "matches": [
+          {
+            "predicted_index": 0,
+            "reference_index": 0,
+            "overlap_seconds": 148920.0,
+            "reference_start_offset_seconds": 3720.0,
+            "predicted_duration_seconds": 148920.0,
+            "reference_duration_seconds": 226800.0,
+            "duration_error_seconds": -77880.0
+          }
+        ]
+      }
+    },
+    "storm": {
+      "threshold_nt": 70.0,
+      "sample_level": {
+        "samples": 10080,
+        "positive_truth_samples": 2700,
+        "positive_prediction_samples": 2094,
+        "tp": 1943,
+        "tn": 7229,
+        "fp": 151,
+        "fn": 757,
+        "accuracy": 0.9099206349206349,
+        "balanced_accuracy": 0.8495844625112918,
+        "precision": 0.9278892072588347,
+        "recall": 0.7196296296296296,
+        "specificity": 0.9795392953929539,
+        "f1": 0.8105965790571548,
+        "false_alarm_rate": 0.02046070460704607,
+        "miss_rate": 0.2803703703703704
+      },
+      "event_level": {
+        "reference_events": 2,
+        "predicted_events": 5,
+        "matched_events": 2,
+        "missed_events": 0,
+        "false_positive_events": 3,
+        "precision": 0.4,
+        "recall": 1.0,
+        "f1": 0.5714285714285715,
+        "median_reference_start_offset_seconds": 21300.0,
+        "median_absolute_reference_start_offset_seconds": 21300.0,
+        "mean_absolute_duration_error_seconds": 50040.0,
+        "matches": [
+          {
+            "predicted_index": 2,
+            "reference_index": 0,
+            "overlap_seconds": 71760.0,
+            "reference_start_offset_seconds": 20280.0,
+            "predicted_duration_seconds": 71760.0,
+            "reference_duration_seconds": 140400.0,
+            "duration_error_seconds": -68640.0
+          },
+          {
+            "predicted_index": 4,
+            "reference_index": 1,
+            "overlap_seconds": 960.0,
+            "reference_start_offset_seconds": 22320.0,
+            "predicted_duration_seconds": 960.0,
+            "reference_duration_seconds": 32400.0,
+            "duration_error_seconds": -31440.0
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,113 @@
+{
+  "observatory": "BOU",
+  "case": {
+    "case_id": "active_20230420",
+    "start_date": "2023-04-20",
+    "days": 7,
+    "class_name": "active"
+  },
+  "samples": 10080,
+  "valid_samples": 10040,
+  "completeness": 0.996031746031746,
+  "cadence_seconds": 60.0,
+  "reference_coverage": 1.0,
+  "kp_coverage": 1.0,
+  "dst_coverage": 0.0,
+  "baseline_quality_nt": {
+    "mae": 2.519554857428593,
+    "rmse": 5.5497136678728,
+    "bias": 0.02273603952965557,
+    "median_absolute_error": 1.2487222314521205,
+    "p95_absolute_error": 10.029813156846604
+  },
+  "scores": {
+    "active": {
+      "threshold_nt": 35.0,
+      "sample_level": {
+        "samples": 10040,
+        "positive_truth_samples": 1440,
+        "positive_prediction_samples": 37,
+        "tp": 37,
+        "tn": 8600,
+        "fp": 0,
+        "fn": 1403,
+        "accuracy": 0.8602589641434263,
+        "balanced_accuracy": 0.5128472222222222,
+        "precision": 1.0,
+        "recall": 0.025694444444444443,
+        "specificity": 1.0,
+        "f1": 0.05010155721056195,
+        "false_alarm_rate": 0.0,
+        "miss_rate": 0.9743055555555555
+      },
+      "event_level": {
+        "reference_events": 1,
+        "predicted_events": 3,
+        "matched_events": 1,
+        "missed_events": 0,
+        "false_positive_events": 2,
+        "precision": 0.3333333333333333,
+        "recall": 1.0,
+        "f1": 0.5,
+        "median_reference_start_offset_seconds": 56400.0,
+        "median_absolute_reference_start_offset_seconds": 56400.0,
+        "mean_absolute_duration_error_seconds": 83700.0,
+        "matches": [
+          {
+            "predicted_index": 2,
+            "reference_index": 0,
+            "overlap_seconds": 2700.0,
+            "reference_start_offset_seconds": 56400.0,
+            "predicted_duration_seconds": 2700.0,
+            "reference_duration_seconds": 86400.0,
+            "duration_error_seconds": -83700.0
+          }
+        ]
+      }
+    },
+    "storm": {
+      "threshold_nt": 70.0,
+      "sample_level": {
+        "samples": 10040,
+        "positive_truth_samples": 900,
+        "positive_prediction_samples": 6,
+        "tp": 6,
+        "tn": 9140,
+        "fp": 0,
+        "fn": 894,
+        "accuracy": 0.9109561752988048,
+        "balanced_accuracy": 0.5033333333333333,
+        "precision": 1.0,
+        "recall": 0.006666666666666667,
+        "specificity": 1.0,
+        "f1": 0.013245033112582783,
+        "false_alarm_rate": 0.0,
+        "miss_rate": 0.9933333333333333
+      },
+      "event_level": {
+        "reference_events": 1,
+        "predicted_events": 1,
+        "matched_events": 1,
+        "missed_events": 0,
+        "false_positive_events": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "median_reference_start_offset_seconds": 37020.0,
+        "median_absolute_reference_start_offset_seconds": 37020.0,
+        "mean_absolute_duration_error_seconds": 53640.0,
+        "matches": [
+          {
+            "predicted_index": 0,
+            "reference_index": 0,
+            "overlap_seconds": 360.0,
+            "reference_start_offset_seconds": 37020.0,
+            "predicted_duration_seconds": 360.0,
+            "reference_duration_seconds": 54000.0,
+            "duration_error_seconds": -53640.0
+          }
+        ]
+      }
+    }
+  }
+}
