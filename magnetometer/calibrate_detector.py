@@ -3,7 +3,7 @@
 
 The expensive path is deliberately separated from profile search. Calibration
 prepares only calibration and validation cases; final-test cases remain
-untouched and are reserved for the release gate.
+untouched and reserved for the release gate.
 """
 from __future__ import annotations
 
@@ -187,6 +187,21 @@ def main() -> None:
     workers = max(1, min(int(args.workers), 8))
     splits, cases = pg.discover_suite(years, args.cases_per_class_per_year, args.window_days)
     cases = [c for c in cases if c.split != "test"]
+
+    # Reuse the Kp series already fetched by discover_suite for every shorter
+    # case range, and prefetch Dst months before worker threads start.
+    kp_start = f"{min(years):04d}-01-01"; kp_end = f"{max(years):04d}-12-31"
+    master_kp = pg._fetch_kp_cached(kp_start, kp_end)
+    pg._fetch_kp_cached = lambda _start, _end: master_kp
+    months = set()
+    for case in cases:
+        start_dt = pd.Timestamp(case.start_date, tz="UTC")
+        end_dt = start_dt + pd.Timedelta(days=case.days - 1)
+        months.update((p.year, p.month) for p in pd.period_range(start_dt.strftime("%Y-%m"), end_dt.strftime("%Y-%m"), freq="M"))
+    print(f"Prefetching Dst once for {len(months)} calibration/validation months...", flush=True)
+    for year, month in sorted(months):
+        pg._fetch_dst_cached(int(year), int(month))
+
     print(f"Preparing {len(cases) * len(observatories)} calibration/validation cases with {workers} workers; final-test cases excluded.", flush=True)
     cal: list[PreparedCase] = []; val: list[PreparedCase] = []; failures = []
     tasks = [(obs, case) for obs in observatories for case in cases]
