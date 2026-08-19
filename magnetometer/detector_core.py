@@ -2,16 +2,16 @@
 """Deterministic, strictly-causal production detector.
 
 The detector is shared by live/demo and certification paths.  It uses only the
-current sample and trailing historical data.  It deliberately avoids centered
-windows, future samples, retroactive gap filling, and full-window statistics.
+current sample and trailing historical data.  No centered windows, future data,
+or retroactive gap filling are permitted.
 
-The detector is conservative by design:
-* short excursions cannot create storms;
-* storm evidence requires corroboration across time scales;
-* established states have hysteresis for stability;
-* startup is explicitly unready until all required trailing windows exist;
-* missing samples never become positive detections;
-* severity levels are nested and mutually ordered.
+Design goals:
+* conservative against isolated telemetry spikes;
+* sensitive to sustained and genuinely strong geomagnetic excursions;
+* explicit causal warm-up;
+* state hysteresis so one physical disturbance is not fragmented into many
+  events by short threshold dips;
+* nested severity levels and safe handling of missing samples.
 """
 from __future__ import annotations
 
@@ -129,10 +129,10 @@ def detect_activity_masks(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Return strictly-causal activity/severity masks and diagnostics.
 
-    All rolling features are trailing.  No output at time ``t`` depends on a
-    sample after ``t``.  The detector does not retroactively bridge gaps: an
-    online consumer must never have an already-emitted label changed by future
-    observations.
+    Storm onset uses either sustained storm-level energy or a strong short
+    excursion with independent medium-timescale corroboration.  Storm release
+    is intentionally slower than onset: brief dips do not fragment a physical
+    disturbance into multiple events.
     """
     x = np.asarray(residual, dtype=float)
     if x.ndim != 1:
@@ -142,9 +142,7 @@ def detect_activity_masks(
     if active_threshold <= 0 or storm_threshold <= 0:
         raise ValueError("activity thresholds must be positive")
     if not (active_threshold < storm_threshold <= major_threshold <= severe_threshold):
-        raise ValueError(
-            "thresholds must satisfy active < storm <= major <= severe"
-        )
+        raise ValueError("thresholds must satisfy active < storm <= major <= severe")
 
     magnitude = np.abs(x)
     valid = np.isfinite(magnitude)
@@ -152,9 +150,7 @@ def detect_activity_masks(
 
     fast = _rolling_median(safe, _window(5 * 60, cadence_s, 31))
     medium = _rolling_median(safe, _window(15 * 60, cadence_s, 61))
-    upper_30m = _rolling_quantile(
-        safe, _window(30 * 60, cadence_s, 121), 0.75
-    )
+    upper_30m = _rolling_quantile(safe, _window(30 * 60, cadence_s, 121), 0.75)
     slow = _rolling_median(safe, _window(60 * 60, cadence_s, 181))
     slow_3h = _rolling_median(safe, _window(3 * 3600, cadence_s, 361))
 
@@ -170,51 +166,33 @@ def detect_activity_masks(
     for arr in arrays:
         arr[~np.isfinite(arr)] = 0.0
 
-    # Activity can be supported by sustained moderate residuals or a strong
-    # short excursion with corroborating medium-term energy.
     active_evidence = history_ready & (
         (medium >= active_threshold)
-        | (
-            (slow >= 0.70 * active_threshold)
-            & (medium >= 0.55 * active_threshold)
-        )
-        | (
-            (slow_3h >= 0.55 * active_threshold)
-            & (medium >= 0.50 * active_threshold)
-        )
-        | (
-            (upper_30m >= 1.10 * active_threshold)
-            & (medium >= 0.50 * active_threshold)
-        )
-        | (
-            (fast >= 1.35 * active_threshold)
-            & (medium >= 0.50 * active_threshold)
-        )
+        | ((slow >= 0.70 * active_threshold) & (medium >= 0.55 * active_threshold))
+        | ((slow_3h >= 0.55 * active_threshold) & (medium >= 0.50 * active_threshold))
+        | ((upper_30m >= 1.10 * active_threshold) & (medium >= 0.50 * active_threshold))
+        | ((fast >= 1.35 * active_threshold) & (medium >= 0.50 * active_threshold))
     )
 
-    # Storm classification is deliberately stricter.  Long-context features
-    # may corroborate a storm, but may not turn a merely active (~20-30 nT)
-    # disturbance into a storm by themselves.  This substantially reduces
-    # persistent false storm events caused by baseline/model drift.
-    storm_evidence = history_ready & (
-        (medium >= storm_threshold)
-        | (
-            (fast >= 1.25 * storm_threshold)
-            & (medium >= 0.80 * storm_threshold)
-        )
-        | (
-            (upper_30m >= storm_threshold)
-            & (medium >= 0.80 * storm_threshold)
-        )
-        | (
-            (slow >= storm_threshold)
-            & (medium >= 0.80 * storm_threshold)
-        )
-        | (
-            (slow_3h >= storm_threshold)
-            & (medium >= 0.80 * storm_threshold)
-        )
+    # A storm can be established in two ways:
+    #   1) sustained storm-level 15-minute energy;
+    #   2) a genuinely strong short/30-minute excursion corroborated by
+    #      medium-term activity.  This restores sensitivity to storm onsets
+    #      that are sharp rather than slowly accumulating.
+    strong_short = (
+        (fast >= 1.55 * storm_threshold)
+        & (medium >= 0.55 * storm_threshold)
     )
+    strong_30m = (
+        (upper_30m >= storm_threshold)
+        & (medium >= 0.65 * storm_threshold)
+    )
+    sustained = (
+        (medium >= storm_threshold)
+        | ((slow >= storm_threshold) & (medium >= 0.70 * storm_threshold))
+        | ((slow_3h >= storm_threshold) & (medium >= 0.70 * storm_threshold))
+    )
+    storm_evidence = history_ready & (sustained | strong_short | strong_30m)
 
     active = _hysteresis_mask(
         active_evidence,
@@ -223,34 +201,25 @@ def detect_activity_masks(
         max(1, int(round(30 * 60 / cadence_s))),
     )
 
+    # Ten minutes confirms onset.  Sixty minutes of recovery evidence is
+    # required to end a storm, preventing short dips from creating separate
+    # events and preserving recall across realistic storm structure.
     storm = _hysteresis_mask(
         storm_evidence,
         history_ready & (medium <= 0.65 * storm_threshold),
         max(1, int(round(10 * 60 / cadence_s))),
-        max(1, int(round(20 * 60 / cadence_s))),
+        max(1, int(round(60 * 60 / cadence_s))),
     )
 
     major_evidence = history_ready & (
         (medium >= major_threshold)
-        | (
-            (upper_30m >= 0.90 * major_threshold)
-            & (medium >= 0.80 * major_threshold)
-        )
-        | (
-            (fast >= 1.15 * major_threshold)
-            & (medium >= 0.80 * major_threshold)
-        )
+        | ((upper_30m >= 0.90 * major_threshold) & (medium >= 0.80 * major_threshold))
+        | ((fast >= 1.15 * major_threshold) & (medium >= 0.80 * major_threshold))
     )
     severe_evidence = history_ready & (
         (medium >= severe_threshold)
-        | (
-            (upper_30m >= 0.90 * severe_threshold)
-            & (medium >= 0.80 * severe_threshold)
-        )
-        | (
-            (fast >= 1.10 * severe_threshold)
-            & (medium >= 0.80 * severe_threshold)
-        )
+        | ((upper_30m >= 0.90 * severe_threshold) & (medium >= 0.80 * severe_threshold))
+        | ((fast >= 1.10 * severe_threshold) & (medium >= 0.80 * severe_threshold))
     )
 
     major = _hysteresis_mask(
@@ -272,9 +241,7 @@ def detect_activity_masks(
     major &= valid & history_ready
     severe &= valid & history_ready
 
-    anomaly, anomaly_median_threshold, anomaly_threshold = _causal_anomaly_mask(
-        x, cadence_s
-    )
+    anomaly, anomaly_median_threshold, anomaly_threshold = _causal_anomaly_mask(x, cadence_s)
 
     diagnostics = {
         "fast_5m_nt": fast,
@@ -282,14 +249,14 @@ def detect_activity_masks(
         "upper_30m_p75_nt": upper_30m,
         "slow_60m_nt": slow,
         "slow_3h_nt": slow_3h,
+        "storm_evidence": storm_evidence,
+        "storm_strong_short_evidence": history_ready & strong_short,
+        "storm_strong_30m_evidence": history_ready & strong_30m,
+        "storm_sustained_evidence": history_ready & sustained,
         "history_ready": history_ready,
-        "unsettled_threshold_nt": np.full(
-            len(x), unsettled_threshold, dtype=float
-        ),
+        "unsettled_threshold_nt": np.full(len(x), unsettled_threshold, dtype=float),
         "anomaly_threshold_nt": anomaly_threshold,
-        "anomaly_median_threshold_nt": np.full(
-            len(x), anomaly_median_threshold, dtype=float
-        ),
+        "anomaly_median_threshold_nt": np.full(len(x), anomaly_median_threshold, dtype=float),
         "anomaly": anomaly & valid,
     }
     return active, storm, major, severe, diagnostics
