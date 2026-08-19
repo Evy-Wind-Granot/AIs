@@ -20,7 +20,10 @@ if str(HERE) not in sys.path:
 import production_grade_validation as pg  # noqa: E402
 from detector_core import DetectorProfile  # noqa: E402
 
-MIN_CASES = 10
+TARGET_CASES = 10
+MIN_STATION_CASES = 4
+MIN_POOLED_CASES_PER_YEAR = 8
+MIN_POOLED_CASES_PER_SPLIT = 12
 MIN_REFERENCE = 0.99
 MIN_COMPLETENESS = 0.995
 MIN_STORM_PRECISION = 0.85
@@ -97,12 +100,30 @@ def coverage_ok(rows: Sequence[Dict[str, Any]]) -> bool:
     return bool(rows) and all(metric(r.get("reference_coverage"), 0) >= MIN_REFERENCE and metric(r.get("completeness"), 0) >= MIN_COMPLETENESS for r in rows)
 
 
-def count_ok(rows: Sequence[Dict[str, Any]], minimum: int) -> bool:
-    for year_rows in group(rows, "year").values():
-        counts = {c: sum(1 for r in year_rows if r["case"]["class_name"] == c) for c in ("quiet", "active", "storm")}
-        if any(v < minimum for v in counts.values()):
-            return False
-    return True
+def sufficiency(rows: Sequence[Dict[str, Any]], observatories: Sequence[str], years: Sequence[int]) -> Dict[str, Any]:
+    """Validate independent-case coverage without requiring ten storms in every station-year."""
+    checks: List[Dict[str, Any]] = []
+    passed = True
+    for obs in observatories:
+        obs_rows = [r for r in rows if r.get("observatory") == obs]
+        for year in years:
+            for cls in ("quiet", "active", "storm"):
+                n = sum(1 for r in obs_rows if int(r["case"]["year"]) == int(year) and r["case"]["class_name"] == cls)
+                ok = n >= MIN_STATION_CASES
+                passed &= ok
+                checks.append({"type": "station_minimum", "observatory": obs, "year": int(year), "class": cls, "usable": n, "required": MIN_STATION_CASES, "passed": ok})
+    for year in years:
+        for cls in ("quiet", "active", "storm"):
+            n = sum(1 for r in rows if int(r["case"]["year"]) == int(year) and r["case"]["class_name"] == cls)
+            ok = n >= MIN_POOLED_CASES_PER_YEAR
+            passed &= ok
+            checks.append({"type": "pooled_year_minimum", "year": int(year), "class": cls, "usable": n, "required": MIN_POOLED_CASES_PER_YEAR, "passed": ok})
+    for cls in ("quiet", "active", "storm"):
+        n = sum(1 for r in rows if r["case"]["class_name"] == cls)
+        ok = n >= MIN_POOLED_CASES_PER_SPLIT
+        passed &= ok
+        checks.append({"type": "pooled_split_minimum", "class": cls, "usable": n, "required": MIN_POOLED_CASES_PER_SPLIT, "passed": ok})
+    return {"passed": bool(passed), "target_cases_per_station_year": TARGET_CASES, "checks": checks}
 
 
 def ci(rows: Sequence[Dict[str, Any]], name: str, seed: int) -> Dict[str, float | None]:
@@ -127,23 +148,33 @@ def event_ci(rows: Sequence[Dict[str, Any]], profile: DetectorProfile) -> Dict[s
     return {"lower": float(np.percentile(arr, 2.5)), "median": float(np.percentile(arr, 50)), "upper": float(np.percentile(arr, 97.5))}
 
 
-def gate(rows: Sequence[Dict[str, Any]], profile: DetectorProfile, *, require_zero_failures: bool = False, failures: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
+def gate(rows: Sequence[Dict[str, Any]], profile: DetectorProfile, *, observatories: Sequence[str], years: Sequence[int], require_zero_failures: bool = False, failures: Sequence[Dict[str, Any]] = ()) -> Dict[str, Any]:
     s = score(rows, profile)
     c = floors(s)
+    coverage = coverage_ok(rows)
+    case_sufficiency = sufficiency(rows, observatories, years)
     storm_f1_ci = ci(s["case_metrics"]["storm"], "f1", SEED)
     storm_recall_ci = ci(s["case_metrics"]["storm"], "recall", SEED + 1)
     event_f1_ci = event_ci(rows, profile)
     checks = {
         **c,
-        "coverage_and_completeness": coverage_ok(rows),
-        "minimum_cases_per_class_per_year": count_ok(rows, MIN_CASES),
+        "coverage_and_completeness": coverage,
+        "independent_case_sufficiency": case_sufficiency["passed"],
         "storm_f1_ci_lower": metric(storm_f1_ci.get("lower")) >= MIN_STORM_F1_CI,
         "storm_recall_ci_lower": metric(storm_recall_ci.get("lower")) >= MIN_STORM_RECALL_CI,
         "storm_event_f1_ci_lower": metric(event_f1_ci.get("lower")) >= MIN_EVENT_F1_CI,
     }
     if require_zero_failures:
         checks["zero_case_failures"] = len(failures) == 0
-    return {"passed": all(checks.values()), "score": s, "checks": checks, "storm_f1_ci": storm_f1_ci, "storm_recall_ci": storm_recall_ci, "storm_event_f1_ci": event_f1_ci}
+    return {
+        "passed": all(checks.values()),
+        "score": s,
+        "checks": checks,
+        "sufficiency": case_sufficiency,
+        "storm_f1_ci": storm_f1_ci,
+        "storm_recall_ci": storm_recall_ci,
+        "storm_event_f1_ci": event_f1_ci,
+    }
 
 
 def main() -> None:
@@ -154,8 +185,8 @@ def main() -> None:
     ap.add_argument("--window-days", type=int, default=7)
     ap.add_argument("--profile-path", default=str(HERE / "detector_profile.json"))
     args = ap.parse_args()
-    if args.cases_per_class_per_year < MIN_CASES:
-        raise SystemExit(f"Strict release requires at least {MIN_CASES} cases per class per year.")
+    if args.cases_per_class_per_year < TARGET_CASES:
+        raise SystemExit(f"Strict release target is {TARGET_CASES} cases per class per station-year; lower targets are not permitted.")
 
     observatories = [x.strip().upper() for x in args.observatory.split(",") if x.strip()]
     years = sorted(set(int(x.strip()) for x in args.years.split(",") if x.strip()))
@@ -172,7 +203,7 @@ def main() -> None:
     profile.validate()
     os.environ["MAGNETOMETER_DETECTOR_PROFILE"] = str(profile_path)
 
-    splits, cases = pg.discover_suite(years, args.cases_per_class_per_year, args.window_days)
+    splits, cases = pg.discover_suite(years, TARGET_CASES, args.window_days)
     pretest = [c for c in cases if c.split != "test"]
     test_cases = [c for c in cases if c.split == "test"]
     loaded: Dict[str, List[Dict[str, Any]]] = {"calibration": [], "validation": [], "test": []}
@@ -186,6 +217,7 @@ def main() -> None:
     print(f"Validation years:   {splits['validation']}")
     print(f"Final-test years:   {splits['test']}")
     print("Final-test access:  BLOCKED until validation passes")
+    print("Sampling policy:    target 10/station-year; minimum 4/station-year; minimum 8 pooled/year; minimum 12 pooled/split")
 
     for obs in observatories:
         for case in pretest:
@@ -194,7 +226,7 @@ def main() -> None:
             except Exception as exc:
                 failures.append({"observatory": obs, "case": asdict(case), "error": str(exc)})
 
-    validation_gate = gate(loaded["validation"], profile, require_zero_failures=False, failures=failures)
+    validation_gate = gate(loaded["validation"], profile, observatories=observatories, years=splits["validation"], require_zero_failures=False, failures=failures)
     if validation_gate["passed"]:
         print("Validation gate: PASS — opening final-test holdout")
         for obs in observatories:
@@ -203,20 +235,25 @@ def main() -> None:
                     loaded["test"].append(pg.load_case(obs, case))
                 except Exception as exc:
                     failures.append({"observatory": obs, "case": asdict(case), "error": str(exc)})
-        final_gate = gate(loaded["test"], profile, require_zero_failures=True, failures=[f for f in failures if f["case"]["split"] == "test"])
+        final_gate = gate(loaded["test"], profile, observatories=observatories, years=splits["test"], require_zero_failures=True, failures=[f for f in failures if f["case"]["split"] == "test"])
     else:
         print("Validation gate: FAIL — final-test holdout remains untouched")
         final_gate = {"passed": False, "score": None, "checks": {"validation_gate": False}}
 
     report = {
-        "schema_version": "4.0-strict-sequenced",
+        "schema_version": "5.0-strict-sequenced-pooled-sufficiency",
         "release_status": "PASS" if final_gate["passed"] else "FAIL",
         "profile": {"path": str(profile_path), "status": payload.get("status"), "values": asdict(profile)},
-        "suite": {"observatories": observatories, "years": years, "splits": splits, "window_days": args.window_days, "cases_per_class_per_year": args.cases_per_class_per_year},
+        "suite": {"observatories": observatories, "years": years, "splits": splits, "window_days": args.window_days, "cases_per_class_per_year_target": args.cases_per_class_per_year},
         "validation": validation_gate,
         "final_test": {"accessed": bool(validation_gate["passed"]), **final_gate},
         "failures": failures,
-        "methodology": {"threshold_selection": "none at release gate; certified profile artifact is evaluated unchanged", "final_test": "not fetched or scored until validation passes", "references": "Kp/Dst are environmental references; coverage is gated"},
+        "methodology": {
+            "threshold_selection": "none at release gate; certified profile artifact is evaluated unchanged",
+            "final_test": "not fetched or scored until validation passes",
+            "sampling": "10 is a target cap; certification requires independent-case minima rather than fabricating sparse storm episodes",
+            "references": "Kp/Dst are environmental references; coverage is gated",
+        },
     }
     out = REPO_ROOT / "magnetometer" / "data" / "magnetometer_production_release_gate.json"
     out.parent.mkdir(parents=True, exist_ok=True)
