@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Causal feature engineering for production geomagnetic forecasting.
 
-All features at timestamp t use observations at or before t.  Feature blocks
-are assembled off-frame and concatenated once so large forecasting jobs do not
-create highly-fragmented pandas DataFrames.
+All features at timestamp t use observations at or before t.  The feature set
+is deliberately detector-oriented: multi-timescale excursion persistence,
+trend/acceleration, threshold occupancy, event recency, and Kp/Dst context are
+included so the classifier can distinguish transient noise from a developing
+geomagnetic event.
 """
 from __future__ import annotations
 
@@ -38,35 +40,22 @@ def _rolling_energy(x: pd.Series, window: int) -> pd.Series:
 
 
 def _rolling_slope(x: pd.Series, window: int, cadence_s: float) -> pd.Series:
-    """Causal least-squares slope in nT/hour over each trailing window.
-
-    This is implemented with a single convolution plus a rolling finite-count
-    check instead of a Python loop over every timestamp.
-    """
+    """Causal least-squares slope in nT/hour over each trailing window."""
+    n = len(x)
     values = x.to_numpy(dtype=float)
-    n = len(values)
-    w = max(2, int(window))
     result = np.full(n, np.nan, dtype=float)
-    if n < w:
-        return pd.Series(result, index=x.index)
-
+    w = max(2, int(window))
     t = np.arange(w, dtype=float) * float(cadence_s) / 3600.0
     tc = t - t.mean()
     denom = float(np.dot(tc, tc))
-    if denom <= 0.0:
+    if denom <= 0:
         return pd.Series(result, index=x.index)
-
-    safe = np.nan_to_num(values, nan=0.0)
-    numerators = np.convolve(safe, tc[::-1], mode="valid")
-    finite_count = pd.Series(np.isfinite(values), index=x.index).rolling(w, min_periods=w).sum().to_numpy()
-    valid = finite_count[w - 1:] == float(w)
-    result[w - 1:] = np.where(valid, numerators / denom, np.nan)
+    for end in range(w - 1, n):
+        segment = values[end - w + 1:end + 1]
+        if not np.isfinite(segment).all():
+            continue
+        result[end] = float(np.dot(tc, segment - segment.mean()) / denom)
     return pd.Series(result, index=x.index)
-
-
-def _append_block(blocks: list[pd.DataFrame], data: dict[str, pd.Series | np.ndarray], index: pd.Index) -> None:
-    """Append a feature block as one DataFrame to avoid repeated frame inserts."""
-    blocks.append(pd.DataFrame(data, index=index))
 
 
 def make_forecast_features(
@@ -89,58 +78,38 @@ def make_forecast_features(
         raise ValueError("frame must contain a 'residual' column")
 
     cadence = max(float(cadence_s), 1.0)
-    index = frame.index
     residual = _safe_series(frame, "residual")
-    residual_abs = residual.abs()
-    dbdt = residual.diff() / cadence * 60.0
-    dbdt_abs = dbdt.abs()
-    dbdt_accel = dbdt.diff() / cadence * 60.0
-    dbdt_accel_abs = dbdt_accel.abs()
+    out = pd.DataFrame(index=frame.index)
+    out["residual"] = residual
+    out["residual_abs"] = residual.abs()
+    out["dbdt"] = residual.diff() / cadence * 60.0
+    out["dbdt_abs"] = out["dbdt"].abs()
+    out["dbdt_accel"] = out["dbdt"].diff() / cadence * 60.0
+    out["dbdt_accel_abs"] = out["dbdt_accel"].abs()
 
     kp = _safe_series(frame, "kp")
     dst = _safe_series(frame, "dst")
-    kp_available = kp.notna().astype(float)
-    dst_available = dst.notna().astype(float)
-    kp_filled = kp.ffill()
-    dst_filled = dst.ffill()
-
-    blocks: list[pd.DataFrame] = []
-    _append_block(
-        blocks,
-        {
-            "residual": residual,
-            "residual_abs": residual_abs,
-            "dbdt": dbdt,
-            "dbdt_abs": dbdt_abs,
-            "dbdt_accel": dbdt_accel,
-            "dbdt_accel_abs": dbdt_accel_abs,
-            "kp": kp_filled,
-            "dst": dst_filled,
-            "kp_available": kp_available,
-            "dst_available": dst_available,
-        },
-        index,
-    )
+    out["kp_available"] = kp.notna().astype(float)
+    out["dst_available"] = dst.notna().astype(float)
+    out["kp"] = kp.ffill()
+    out["dst"] = dst.ffill()
 
     # Geomagnetic context and trends. These are all trailing/causal.
-    context: dict[str, pd.Series] = {}
     for minutes in (15, 60, 180, 360, 720):
         w = _window_samples(minutes, cadence)
-        min_periods = max(2, w // 3)
         label = f"{minutes}m"
-        kp_roll = kp_filled.rolling(w, min_periods=min_periods)
-        dst_roll = dst_filled.rolling(w, min_periods=min_periods)
-        context[f"kp_max_{label}"] = kp_roll.max()
-        context[f"kp_mean_{label}"] = kp_roll.mean()
-        context[f"dst_min_{label}"] = dst_roll.min()
-        context[f"dst_mean_{label}"] = dst_roll.mean()
-        context[f"dst_range_{label}"] = dst_roll.max() - dst_roll.min()
+        out[f"kp_max_{label}"] = out["kp"].rolling(w, min_periods=max(2, w // 3)).max()
+        out[f"kp_mean_{label}"] = out["kp"].rolling(w, min_periods=max(2, w // 3)).mean()
+        out[f"dst_min_{label}"] = out["dst"].rolling(w, min_periods=max(2, w // 3)).min()
+        out[f"dst_mean_{label}"] = out["dst"].rolling(w, min_periods=max(2, w // 3)).mean()
+        out[f"dst_range_{label}"] = (
+            out["dst"].rolling(w, min_periods=max(2, w // 3)).max()
+            - out["dst"].rolling(w, min_periods=max(2, w // 3)).min()
+        )
         if minutes in (15, 60, 180):
-            context[f"kp_change_{label}"] = kp_filled - kp_filled.shift(w)
-            context[f"dst_change_{label}"] = dst_filled - dst_filled.shift(w)
-    _append_block(blocks, context, index)
+            out[f"kp_change_{label}"] = out["kp"] - out["kp"].shift(w)
+            out[f"dst_change_{label}"] = out["dst"] - out["dst"].shift(w)
 
-    # Residual, derivative, excursion, and slope blocks.
     for minutes in sorted(set(int(v) for v in windows_minutes)):
         if minutes <= 0:
             raise ValueError("window sizes must be positive")
@@ -148,86 +117,72 @@ def make_forecast_features(
         label = f"{minutes}m"
         min_periods = max(2, w // 3)
         roll = residual.rolling(w, min_periods=min_periods)
-        abs_roll = residual_abs.rolling(w, min_periods=min_periods)
-        energy = _rolling_energy(residual, w)
-        block: dict[str, pd.Series | np.ndarray] = {
-            f"residual_mean_{label}": roll.mean(),
-            f"residual_std_{label}": roll.std(),
-            f"residual_ptp_{label}": roll.max() - roll.min(),
-            f"residual_energy_{label}": energy,
-            f"residual_rms_{label}": np.sqrt(energy),
-            f"abs_residual_mean_{label}": abs_roll.mean(),
-            f"abs_residual_max_{label}": abs_roll.max(),
-            f"abs_residual_p90_{label}": abs_roll.quantile(0.90),
-            f"abs_residual_p95_{label}": abs_roll.quantile(0.95),
-            f"dbdt_std_{label}": dbdt.rolling(w, min_periods=min_periods).std(),
-            f"dbdt_max_{label}": dbdt_abs.rolling(w, min_periods=min_periods).max(),
-            f"dbdt_accel_max_{label}": dbdt_accel_abs.rolling(w, min_periods=min_periods).max(),
-        }
+        abs_roll = residual.abs().rolling(w, min_periods=min_periods)
+        out[f"residual_mean_{label}"] = roll.mean()
+        out[f"residual_std_{label}"] = roll.std()
+        out[f"residual_ptp_{label}"] = roll.max() - roll.min()
+        out[f"residual_energy_{label}"] = _rolling_energy(residual, w)
+        out[f"residual_rms_{label}"] = np.sqrt(_rolling_energy(residual, w))
+        out[f"abs_residual_mean_{label}"] = abs_roll.mean()
+        out[f"abs_residual_max_{label}"] = abs_roll.max()
+        out[f"abs_residual_p90_{label}"] = abs_roll.quantile(0.90)
+        out[f"abs_residual_p95_{label}"] = abs_roll.quantile(0.95)
+        out[f"dbdt_std_{label}"] = out["dbdt"].rolling(w, min_periods=min_periods).std()
+        out[f"dbdt_max_{label}"] = out["dbdt_abs"].rolling(w, min_periods=min_periods).max()
+        out[f"dbdt_accel_max_{label}"] = out["dbdt_accel_abs"].rolling(w, min_periods=min_periods).max()
         if minutes <= 180:
-            block[f"residual_slope_{label}"] = _rolling_slope(residual, w, cadence)
-            block[f"abs_slope_{label}"] = _rolling_slope(residual_abs, w, cadence)
+            out[f"residual_slope_{label}"] = _rolling_slope(residual, w, cadence)
+            out[f"abs_slope_{label}"] = _rolling_slope(residual.abs(), w, cadence)
 
-        abs_array = residual_abs.to_numpy(dtype=float)
         for threshold in EXCURSION_THRESHOLDS_NT:
             tag = str(int(threshold))
-            mask = pd.Series(abs_array >= threshold, index=index)
-            rolling_mask = mask.astype(float).rolling(w, min_periods=min_periods)
-            block[f"above_{tag}nt_fraction_{label}"] = rolling_mask.mean()
-            block[f"above_{tag}nt_count_{label}"] = rolling_mask.sum()
-        _append_block(blocks, block, index)
+            mask = residual.abs() >= threshold
+            out[f"above_{tag}nt_fraction_{label}"] = mask.astype(float).rolling(w, min_periods=min_periods).mean()
+            out[f"above_{tag}nt_count_{label}"] = mask.astype(float).rolling(w, min_periods=min_periods).sum()
 
-    # Event-state features: persistence and recency.
-    event_block: dict[str, pd.Series | np.ndarray] = {}
+    # Event-state features: persistence and recency are often more predictive
+    # than the instantaneous residual alone.
+    abs_res = residual.abs()
     for threshold in EXCURSION_THRESHOLDS_NT:
         tag = str(int(threshold))
-        mask = residual_abs >= threshold
+        mask = abs_res >= threshold
+        # Consecutive samples above a threshold, expressed in minutes.
         groups = (~mask).cumsum()
         run_length = mask.groupby(groups, sort=False).cumcount() + 1
-        event_block[f"consecutive_above_{tag}nt_min"] = run_length.where(mask, 0) * cadence / 60.0
-        last_event = pd.Series(index.where(mask), index=index).ffill()
-        event_block[f"minutes_since_{tag}nt"] = (
-            (index.to_series() - last_event).dt.total_seconds() / 60.0
+        out[f"consecutive_above_{tag}nt_min"] = (run_length.where(mask, 0) * cadence / 60.0)
+        last_event = pd.Series(frame.index.where(mask), index=frame.index).ffill()
+        out[f"minutes_since_{tag}nt"] = (
+            (frame.index.to_series() - last_event).dt.total_seconds() / 60.0
         ).fillna(1e6)
-    _append_block(blocks, event_block, index)
 
-    lag_block: dict[str, pd.Series] = {}
     for minutes in sorted(set(int(v) for v in lags_minutes)):
         if minutes <= 0:
             raise ValueError("lag sizes must be positive")
         lag = max(1, int(round(minutes * 60.0 / cadence)))
-        lag_block[f"residual_lag_{minutes}m"] = residual.shift(lag)
-        lag_block[f"abs_residual_lag_{minutes}m"] = residual_abs.shift(lag)
-        lag_block[f"dbdt_lag_{minutes}m"] = dbdt.shift(lag)
-    _append_block(blocks, lag_block, index)
+        out[f"residual_lag_{minutes}m"] = residual.shift(lag)
+        out[f"abs_residual_lag_{minutes}m"] = abs_res.shift(lag)
+        out[f"dbdt_lag_{minutes}m"] = out["dbdt"].shift(lag)
 
-    threshold_block: dict[str, pd.Series] = {}
+    # Local trend ratios / distances from operational thresholds.
     for threshold in (15.0, 25.0, 35.0, 50.0, 75.0):
         tag = str(int(threshold))
-        threshold_block[f"distance_to_{tag}nt"] = threshold - residual_abs
-        threshold_block[f"overshoot_{tag}nt"] = np.maximum(residual_abs - threshold, 0.0)
-    _append_block(blocks, threshold_block, index)
+        out[f"distance_to_{tag}nt"] = threshold - abs_res
+        out[f"overshoot_{tag}nt"] = np.maximum(abs_res - threshold, 0.0)
 
     utc_hours = (
-        index.hour.to_numpy(dtype=float)
-        + index.minute.to_numpy(dtype=float) / 60.0
-        + index.second.to_numpy(dtype=float) / 3600.0
+        frame.index.hour.to_numpy(dtype=float)
+        + frame.index.minute.to_numpy(dtype=float) / 60.0
+        + frame.index.second.to_numpy(dtype=float) / 3600.0
     )
-    _append_block(
-        blocks,
-        {
-            "utc_sin_24h": np.sin(2.0 * np.pi * utc_hours / 24.0),
-            "utc_cos_24h": np.cos(2.0 * np.pi * utc_hours / 24.0),
-            "utc_sin_12h": np.sin(2.0 * np.pi * utc_hours / 12.0),
-            "utc_cos_12h": np.cos(2.0 * np.pi * utc_hours / 12.0),
-        },
-        index,
-    )
+    out["utc_sin_24h"] = np.sin(2.0 * np.pi * utc_hours / 24.0)
+    out["utc_cos_24h"] = np.cos(2.0 * np.pi * utc_hours / 24.0)
+    out["utc_sin_12h"] = np.sin(2.0 * np.pi * utc_hours / 12.0)
+    out["utc_cos_12h"] = np.cos(2.0 * np.pi * utc_hours / 12.0)
 
-    out = pd.concat(blocks, axis=1)
     out = out.replace([np.inf, -np.inf], np.nan)
     # Warm-up values are filled only from the past. No bfill/interpolation.
-    return out.ffill().fillna(0.0)
+    out = out.ffill().fillna(0.0)
+    return out
 
 
 def _future_window_max(x: pd.Series, steps: int) -> pd.Series:
@@ -291,12 +246,15 @@ def sequence_tensor(
     missing = [name for name in feature_names if name not in features.columns]
     if missing:
         raise KeyError(f"Missing feature columns: {missing}")
-    values = features.loc[:, list(feature_names)].to_numpy(dtype=np.float32, copy=False)
-    if len(values) < sequence_length:
+    values = features.loc[:, list(feature_names)].to_numpy(dtype=float)
+    tensors = []
+    timestamps = []
+    for end in range(sequence_length - 1, len(values)):
+        window = values[end - sequence_length + 1:end + 1]
+        if not np.isfinite(window).all():
+            continue
+        tensors.append(window)
+        timestamps.append(features.index[end])
+    if not tensors:
         return np.empty((0, sequence_length, len(feature_names)), dtype=np.float32), pd.DatetimeIndex([], tz=features.index.tz)
-    windows = np.lib.stride_tricks.sliding_window_view(values, (sequence_length, values.shape[1]))
-    windows = windows[:, 0]
-    finite = np.isfinite(windows).all(axis=(1, 2))
-    tensors = np.ascontiguousarray(windows[finite], dtype=np.float32)
-    timestamps = features.index[sequence_length - 1:][finite]
-    return tensors, pd.DatetimeIndex(timestamps)
+    return np.asarray(tensors, dtype=np.float32), pd.DatetimeIndex(timestamps)
