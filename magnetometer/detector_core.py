@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Deterministic, strictly-causal production magnetometer detector.
 
-The inference path is intentionally simple and auditable: robust trailing
-statistics, causal hysteresis, explicit warm-up, and no future samples.
-Thresholds are not hard-coded deployment policy; a validated detector profile
-may supply them after calibration on historical data.
+The inference path uses robust trailing statistics, causal hysteresis, explicit
+warm-up, and no future samples. Calibrated detector profiles supply deployment
+parameters. The live path avoids repeated profile I/O, redundant diagnostics,
+and anomaly statistics unless diagnostics explicitly request them.
 """
 from __future__ import annotations
 
 import json
 import os
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -30,15 +31,12 @@ PROFILE_PATH = Path(__file__).resolve().with_name("detector_profile.json")
 
 @dataclass(frozen=True)
 class DetectorProfile:
-    """Deployment parameters produced by calibration, not hand tuning."""
-
     active_nt: float = DEFAULT_ACTIVE_NT
     storm_nt: float = DEFAULT_STORM_NT
     unsettled_nt: float = DEFAULT_UNSETTLED_NT
     major_nt: float = DEFAULT_MAJOR_STORM_NT
     severe_nt: float = DEFAULT_SEVERE_STORM_NT
 
-    # Evidence multipliers.  These are deliberately bounded by validation.
     active_slow_ratio: float = 0.65
     active_slow_3h_ratio: float = 0.55
     active_upper_ratio: float = 1.00
@@ -68,8 +66,7 @@ class DetectorProfile:
     @classmethod
     def from_dict(cls, value: Dict[str, object]) -> "DetectorProfile":
         allowed = {f.name for f in cls.__dataclass_fields__.values()}
-        data = {k: value[k] for k in allowed if k in value}
-        profile = cls(**data)
+        profile = cls(**{k: value[k] for k in allowed if k in value})
         profile.validate()
         return profile
 
@@ -86,12 +83,10 @@ class DetectorProfile:
         if not (0 < self.storm_on_minutes <= self.storm_off_minutes <= 24 * 60):
             raise ValueError("invalid storm hysteresis durations")
         bounded = (
-            self.active_slow_ratio, self.active_slow_3h_ratio,
-            self.active_upper_ratio, self.active_fast_ratio,
-            self.active_medium_slow_ratio, self.active_medium_upper_ratio,
-            self.storm_fast_ratio, self.storm_fast_medium_ratio,
-            self.storm_upper_ratio, self.storm_upper_medium_ratio,
-            self.storm_medium_ratio, self.storm_release_ratio,
+            self.active_slow_ratio, self.active_slow_3h_ratio, self.active_upper_ratio,
+            self.active_fast_ratio, self.active_medium_slow_ratio, self.active_medium_upper_ratio,
+            self.storm_fast_ratio, self.storm_fast_medium_ratio, self.storm_upper_ratio,
+            self.storm_upper_medium_ratio, self.storm_medium_ratio, self.storm_release_ratio,
             self.major_upper_ratio, self.major_fast_ratio, self.major_medium_ratio,
             self.severe_upper_ratio, self.severe_fast_ratio, self.severe_medium_ratio,
         )
@@ -99,13 +94,9 @@ class DetectorProfile:
             raise ValueError("detector evidence multipliers are outside safe bounds")
 
 
-def load_detector_profile(path: Optional[Path | str] = None) -> DetectorProfile:
-    """Load a certified profile; reject malformed or uncertified profiles.
-
-    A missing profile is safe and deterministic: the built-in baseline is used.
-    A present but malformed/uncertified profile is *not* silently accepted.
-    """
-    candidate = Path(path or os.environ.get(PROFILE_ENV, PROFILE_PATH))
+@lru_cache(maxsize=8)
+def _load_profile_cached(path_text: str) -> DetectorProfile:
+    candidate = Path(path_text)
     if not candidate.exists():
         return DetectorProfile()
     try:
@@ -114,8 +105,12 @@ def load_detector_profile(path: Optional[Path | str] = None) -> DetectorProfile:
         raise RuntimeError(f"cannot load detector profile {candidate}: {exc}") from exc
     if payload.get("status") != "certified":
         raise RuntimeError(f"detector profile {candidate} is not certified")
-    profile = DetectorProfile.from_dict(payload.get("profile", payload))
-    return profile
+    return DetectorProfile.from_dict(payload.get("profile", payload))
+
+
+def load_detector_profile(path: Optional[Path | str] = None) -> DetectorProfile:
+    candidate = Path(path or os.environ.get(PROFILE_ENV, PROFILE_PATH)).resolve()
+    return _load_profile_cached(str(candidate))
 
 
 def _window(seconds: float, cadence_s: float, cap: int = 0) -> int:
@@ -124,11 +119,11 @@ def _window(seconds: float, cadence_s: float, cap: int = 0) -> int:
 
 
 def _rolling_median(values: np.ndarray, window: int) -> np.ndarray:
-    return pd.Series(values, dtype=float).rolling(window, min_periods=window).median().to_numpy(dtype=float)
+    return pd.Series(values, copy=False).rolling(window, min_periods=window).median().to_numpy(dtype=float, copy=False)
 
 
 def _rolling_quantile(values: np.ndarray, window: int, quantile: float) -> np.ndarray:
-    return pd.Series(values, dtype=float).rolling(window, min_periods=window).quantile(quantile).to_numpy(dtype=float)
+    return pd.Series(values, copy=False).rolling(window, min_periods=window).quantile(quantile).to_numpy(dtype=float, copy=False)
 
 
 def _hysteresis_mask(evidence_on: np.ndarray, evidence_off: np.ndarray, min_on: int, min_off: int) -> np.ndarray:
@@ -136,18 +131,20 @@ def _hysteresis_mask(evidence_on: np.ndarray, evidence_off: np.ndarray, min_on: 
     off = np.asarray(evidence_off, dtype=bool)
     if on.shape != off.shape:
         raise ValueError("evidence_on and evidence_off must have identical shapes")
-    out = np.zeros(len(on), dtype=bool)
+    out = np.zeros(on.size, dtype=bool)
     state = False
     candidate = 0
-    for i in range(len(on)):
+    min_on = max(1, int(min_on))
+    min_off = max(1, int(min_off))
+    for i in range(on.size):
         if not state:
             candidate = candidate + 1 if on[i] else 0
-            if candidate >= max(1, int(min_on)):
+            if candidate >= min_on:
                 state = True
                 candidate = 0
         else:
             candidate = candidate + 1 if off[i] else 0
-            if candidate >= max(1, int(min_off)):
+            if candidate >= min_off:
                 state = False
                 candidate = 0
         out[i] = state
@@ -157,13 +154,12 @@ def _hysteresis_mask(evidence_on: np.ndarray, evidence_off: np.ndarray, min_on: 
 def _causal_anomaly_mask(x: np.ndarray, cadence_s: float) -> Tuple[np.ndarray, float, np.ndarray]:
     diff = np.diff(x, prepend=np.nan)
     w = _window(3 * 3600, cadence_s, 721)
-    d = pd.Series(diff, dtype=float)
-    med = d.rolling(w, min_periods=w).median()
-    mad = (d - med).abs().rolling(w, min_periods=w).median()
-    threshold = np.maximum(DEFAULT_ANOMALY_DELTA_NT, 8.0 * 1.4826 * mad.to_numpy(dtype=float))
+    d = pd.Series(diff, copy=False)
+    med = d.rolling(w, min_periods=w).median().to_numpy(dtype=float, copy=False)
+    mad = pd.Series(np.abs(diff - med), copy=False).rolling(w, min_periods=w).median().to_numpy(dtype=float, copy=False)
+    threshold = np.maximum(DEFAULT_ANOMALY_DELTA_NT, 8.0 * 1.4826 * mad)
     threshold[~np.isfinite(threshold)] = DEFAULT_ANOMALY_DELTA_NT
-    med_values = med.to_numpy(dtype=float)
-    anomaly = np.isfinite(diff) & np.isfinite(med_values) & (np.abs(diff - med_values) >= threshold)
+    anomaly = np.isfinite(diff) & np.isfinite(med) & (np.abs(diff - med) >= threshold)
     finite_threshold = threshold[np.isfinite(threshold)]
     median_threshold = float(np.median(finite_threshold)) if finite_threshold.size else DEFAULT_ANOMALY_DELTA_NT
     return anomaly, median_threshold, threshold
@@ -178,7 +174,9 @@ def detect_activity_masks(
     major_threshold: Optional[float] = None,
     severe_threshold: Optional[float] = None,
     profile: Optional[DetectorProfile] = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    *,
+    include_anomaly: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
     """Return strictly-causal activity/severity masks and diagnostics."""
     p = profile or load_detector_profile()
     active_threshold = p.active_nt if active_threshold is None else float(active_threshold)
@@ -200,14 +198,14 @@ def detect_activity_masks(
     magnitude = np.abs(x)
     valid = np.isfinite(magnitude)
     safe = np.where(valid, magnitude, np.nan)
+
     fast = _rolling_median(safe, _window(5 * 60, cadence_s, 31))
     medium = _rolling_median(safe, _window(15 * 60, cadence_s, 61))
     upper_30m = _rolling_quantile(safe, _window(30 * 60, cadence_s, 121), 0.75)
     slow = _rolling_median(safe, _window(60 * 60, cadence_s, 181))
     slow_3h = _rolling_median(safe, _window(3 * 3600, cadence_s, 361))
-    arrays = (fast, medium, upper_30m, slow, slow_3h)
     history_ready = np.isfinite(fast) & np.isfinite(medium) & np.isfinite(upper_30m) & np.isfinite(slow) & np.isfinite(slow_3h) & valid
-    for arr in arrays:
+    for arr in (fast, medium, upper_30m, slow, slow_3h):
         arr[~np.isfinite(arr)] = 0.0
 
     active_evidence = history_ready & (
@@ -257,20 +255,27 @@ def detect_activity_masks(
     storm &= valid & history_ready
     major &= valid & history_ready
     severe &= valid & history_ready
-    anomaly, anomaly_median_threshold, anomaly_threshold = _causal_anomaly_mask(x, cadence_s)
 
-    diagnostics = {
-        "fast_5m_nt": fast, "medium_15m_nt": medium, "upper_30m_p75_nt": upper_30m,
-        "slow_60m_nt": slow, "slow_3h_nt": slow_3h, "storm_evidence": storm_evidence,
+    diagnostics: Dict[str, object] = {
+        "fast_5m_nt": fast,
+        "medium_15m_nt": medium,
+        "upper_30m_p75_nt": upper_30m,
+        "slow_60m_nt": slow,
+        "slow_3h_nt": slow_3h,
+        "storm_evidence": storm_evidence,
         "storm_strong_short_evidence": history_ready & strong_short,
         "storm_strong_30m_evidence": history_ready & strong_30m,
-        "storm_sustained_evidence": history_ready & sustained, "history_ready": history_ready,
-        "unsettled_threshold_nt": np.full(len(x), unsettled_threshold, dtype=float),
-        "anomaly_threshold_nt": anomaly_threshold,
-        "anomaly_median_threshold_nt": np.full(len(x), anomaly_median_threshold, dtype=float),
-        "anomaly": anomaly & valid,
-        "profile": np.asarray([json.dumps(asdict(p), sort_keys=True)] * len(x), dtype=object),
+        "storm_sustained_evidence": history_ready & sustained,
+        "history_ready": history_ready,
+        "unsettled_threshold_nt": np.full(x.size, unsettled_threshold, dtype=float),
     }
+    if include_anomaly:
+        anomaly, anomaly_median_threshold, anomaly_threshold = _causal_anomaly_mask(x, cadence_s)
+        diagnostics.update({
+            "anomaly_threshold_nt": anomaly_threshold,
+            "anomaly_median_threshold_nt": np.full(x.size, anomaly_median_threshold, dtype=float),
+            "anomaly": anomaly & valid,
+        })
     return active, storm, major, severe, diagnostics
 
 
@@ -284,24 +289,38 @@ def flag_activity(
     severe_threshold: Optional[float] = None,
     profile: Optional[DetectorProfile] = None,
 ) -> np.ndarray:
-    """Classify residuals using the certified profile when available."""
+    """Classify residuals using the certified profile on the optimized live path."""
     x = np.asarray(residual, dtype=float)
+    p = profile or load_detector_profile()
+    if active_threshold is None:
+        active_threshold = p.active_nt
+    if storm_threshold is None:
+        storm_threshold = p.storm_nt
+    if unsettled_threshold is None:
+        unsettled_threshold = p.unsettled_nt
+    if major_threshold is None:
+        major_threshold = p.major_nt
+    if severe_threshold is None:
+        severe_threshold = p.severe_nt
+
     active, storm, major, severe, diagnostics = detect_activity_masks(
-        x, cadence_s=cadence_s, active_threshold=active_threshold, storm_threshold=storm_threshold,
-        unsettled_threshold=unsettled_threshold, major_threshold=major_threshold,
-        severe_threshold=severe_threshold, profile=profile,
+        x,
+        cadence_s=cadence_s,
+        active_threshold=active_threshold,
+        storm_threshold=storm_threshold,
+        unsettled_threshold=unsettled_threshold,
+        major_threshold=major_threshold,
+        severe_threshold=severe_threshold,
+        profile=p,
+        include_anomaly=False,
     )
     medium = diagnostics["medium_15m_nt"]
     ready = diagnostics["history_ready"]
-    p = profile or load_detector_profile()
-    unsettled = p.unsettled_nt if unsettled_threshold is None else float(unsettled_threshold)
-    flags = np.full(len(x), "quiet", dtype=object)
-    flags[ready & (medium >= unsettled)] = "unsettled"
+    flags = np.full(x.size, "quiet", dtype=object)
+    flags[ready & (medium >= unsettled_threshold)] = "unsettled"
     flags[active] = "active"
     flags[storm] = "minor_storm"
     flags[major] = "major_storm"
     flags[severe] = "severe_storm"
-    anomaly = diagnostics["anomaly"]
-    flags[anomaly & ready & ~active & ~storm] = "anomaly"
     flags[~np.isfinite(x)] = "quiet"
     return flags
