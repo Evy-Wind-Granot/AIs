@@ -3,8 +3,7 @@
 
 The inference path uses robust trailing statistics, causal hysteresis, explicit
 warm-up, and no future samples. Calibrated detector profiles supply deployment
-parameters. The hot path avoids repeated profile I/O and redundant allocations
-while preserving the detector's existing classification semantics.
+parameters. Missing data never leaves an alert latched across an invalid gap.
 """
 from __future__ import annotations
 
@@ -126,17 +125,33 @@ def _rolling_quantile(values: np.ndarray, window: int, quantile: float) -> np.nd
     return pd.Series(values, copy=False).rolling(window, min_periods=window).quantile(quantile).to_numpy(dtype=float, copy=False)
 
 
-def _hysteresis_mask(evidence_on: np.ndarray, evidence_off: np.ndarray, min_on: int, min_off: int) -> np.ndarray:
+def _hysteresis_mask(
+    evidence_on: np.ndarray,
+    evidence_off: np.ndarray,
+    min_on: int,
+    min_off: int,
+    valid: Optional[np.ndarray] = None,
+) -> np.ndarray:
     on = np.asarray(evidence_on, dtype=bool)
     off = np.asarray(evidence_off, dtype=bool)
     if on.shape != off.shape:
         raise ValueError("evidence_on and evidence_off must have identical shapes")
+    if valid is None:
+        valid_mask = np.ones(on.shape, dtype=bool)
+    else:
+        valid_mask = np.asarray(valid, dtype=bool)
+        if valid_mask.shape != on.shape:
+            raise ValueError("valid mask must have identical shape")
     out = np.zeros(on.size, dtype=bool)
     state = False
     candidate = 0
     min_on = max(1, int(min_on))
     min_off = max(1, int(min_off))
     for i in range(on.size):
+        if not valid_mask[i]:
+            state = False
+            candidate = 0
+            continue
         if not state:
             candidate = candidate + 1 if on[i] else 0
             if candidate >= min_on:
@@ -230,12 +245,14 @@ def detect_activity_masks(
         history_ready & (medium <= 0.60 * active_threshold),
         _window(p.active_on_minutes * 60, cadence_s),
         _window(p.active_off_minutes * 60, cadence_s),
+        valid=history_ready,
     )
     storm = _hysteresis_mask(
         storm_evidence,
         history_ready & (medium <= p.storm_release_ratio * storm_threshold),
         _window(p.storm_on_minutes * 60, cadence_s),
         _window(p.storm_off_minutes * 60, cadence_s),
+        valid=history_ready,
     )
 
     major_evidence = history_ready & (
@@ -248,8 +265,20 @@ def detect_activity_masks(
         | ((upper_30m >= p.severe_upper_ratio * severe_threshold) & (medium >= p.severe_medium_ratio * severe_threshold))
         | ((fast >= p.severe_fast_ratio * severe_threshold) & (medium >= p.severe_medium_ratio * severe_threshold))
     )
-    major = _hysteresis_mask(major_evidence, history_ready & (medium <= 0.75 * major_threshold), _window(10 * 60, cadence_s), _window(30 * 60, cadence_s)) & storm
-    severe = _hysteresis_mask(severe_evidence, history_ready & (medium <= 0.75 * severe_threshold), _window(10 * 60, cadence_s), _window(30 * 60, cadence_s)) & major
+    major = _hysteresis_mask(
+        major_evidence,
+        history_ready & (medium <= 0.75 * major_threshold),
+        _window(10 * 60, cadence_s),
+        _window(30 * 60, cadence_s),
+        valid=history_ready,
+    ) & storm
+    severe = _hysteresis_mask(
+        severe_evidence,
+        history_ready & (medium <= 0.75 * severe_threshold),
+        _window(10 * 60, cadence_s),
+        _window(30 * 60, cadence_s),
+        valid=history_ready,
+    ) & major
 
     active &= valid & history_ready
     storm &= valid & history_ready
@@ -267,6 +296,8 @@ def detect_activity_masks(
         "storm_strong_30m_evidence": history_ready & strong_30m,
         "storm_sustained_evidence": history_ready & sustained,
         "history_ready": history_ready,
+        "invalid_input": ~valid,
+        "warmup_samples": int(np.argmax(history_ready)) if np.any(history_ready) else int(x.size),
         "unsettled_threshold_nt": np.full(x.size, unsettled_threshold, dtype=float),
     }
     if include_anomaly:

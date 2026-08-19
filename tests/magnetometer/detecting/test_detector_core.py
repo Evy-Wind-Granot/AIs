@@ -48,6 +48,16 @@ def test_nan_samples_are_safe():
     assert np.all(flags[np.isnan(residual)] == "quiet"); assert np.all(np.isfinite(residual) | (flags == "quiet"))
 
 
+def test_invalid_gap_clears_latched_storm_state():
+    residual = np.zeros(8 * 3600, dtype=float)
+    residual[4 * 3600:6 * 3600] = 60.0
+    residual[6 * 3600:6 * 3600 + 10] = np.nan
+    residual[6 * 3600 + 10:] = 60.0
+    flags = flag_activity(residual, cadence_s=60.0)
+    gap = slice(6 * 3600, 6 * 3600 + 10)
+    assert np.all(flags[gap] == "quiet")
+
+
 def test_detector_is_strictly_causal():
     prefix = np.zeros(5 * 3600, dtype=float); prefix[4 * 3600:] = 18.0; future = np.full(3 * 3600, 250.0, dtype=float)
     short = flag_activity(prefix, cadence_s=60.0); long = flag_activity(np.concatenate([prefix, future]), cadence_s=60.0)
