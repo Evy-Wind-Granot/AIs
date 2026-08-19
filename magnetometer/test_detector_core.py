@@ -51,3 +51,22 @@ def test_nan_samples_are_safe():
     flags = flag_activity(residual, cadence_s=60.0)
     assert np.all(flags[np.isnan(residual)] == "quiet")
     assert np.all(np.isfinite(residual) | (flags == "quiet"))
+
+
+def test_detector_is_strictly_causal():
+    """Adding future samples must not change already-emitted classifications."""
+    prefix = np.zeros(5 * 3600, dtype=float)
+    prefix[4 * 3600:] = 18.0
+    future = np.full(3 * 3600, 250.0, dtype=float)
+    short = flag_activity(prefix, cadence_s=60.0)
+    long = flag_activity(np.concatenate([prefix, future]), cadence_s=60.0)
+    assert np.array_equal(short, long[: len(prefix)])
+
+
+def test_startup_requires_history():
+    """The detector does not fabricate classifications before all windows exist."""
+    residual = np.full(4 * 3600, 60.0, dtype=float)
+    flags = flag_activity(residual, cadence_s=60.0)
+    # Three-hour context is the slowest feature, so the initial warm-up remains quiet.
+    assert np.all(flags[: 3 * 3600] == "quiet")
+    assert np.any(np.isin(flags[3 * 3600 :], ["minor_storm", "major_storm", "severe_storm"]))
