@@ -24,7 +24,6 @@ if str(HERE) not in sys.path:
 import production_grade_validation as pg
 from detector_core import DetectorProfile
 
-
 PARAMETER_GRID = {
     "active_nt": (15.0, 20.0, 25.0, 30.0, 35.0),
     "storm_nt": (35.0, 50.0, 60.0, 70.0, 80.0),
@@ -40,6 +39,7 @@ class PreparedCase:
     """Cached detector evidence and reference masks for one historical case."""
 
     residual: np.ndarray
+    cadence_s: float
     known: np.ndarray
     active_ref: np.ndarray
     storm_ref: np.ndarray
@@ -74,7 +74,6 @@ class PreparedCase:
             | ((self.upper_30m >= p.active_upper_ratio * p.active_nt) & (self.medium_15m >= p.active_medium_upper_ratio * p.active_nt))
             | ((self.fast_5m >= p.active_fast_ratio * p.active_nt) & (self.medium_15m >= p.active_medium_slow_ratio * p.active_nt))
         )
-
         strong_short = (self.fast_5m >= p.storm_fast_ratio * p.storm_nt) & (self.medium_15m >= p.storm_fast_medium_ratio * p.storm_nt)
         strong_30m = (self.upper_30m >= p.storm_upper_ratio * p.storm_nt) & (self.medium_15m >= p.storm_upper_medium_ratio * p.storm_nt)
         sustained = (
@@ -83,18 +82,17 @@ class PreparedCase:
             | ((self.slow_3h >= p.storm_nt) & (self.medium_15m >= p.storm_medium_ratio * p.storm_nt))
         )
         storm_evidence = history_ready & (sustained | strong_short | strong_30m)
-
         active = _hysteresis_mask_fast(
             active_evidence,
             history_ready & (self.medium_15m <= 0.60 * p.active_nt),
-            self._window(p.active_on_minutes * 60, 60.0),
-            self._window(p.active_off_minutes * 60, 60.0),
+            self._window(p.active_on_minutes * 60, self.cadence_s),
+            self._window(p.active_off_minutes * 60, self.cadence_s),
         )
         storm = _hysteresis_mask_fast(
             storm_evidence,
             history_ready & (self.medium_15m <= p.storm_release_ratio * p.storm_nt),
-            self._window(p.storm_on_minutes * 60, 60.0),
-            self._window(p.storm_off_minutes * 60, 60.0),
+            self._window(p.storm_on_minutes * 60, self.cadence_s),
+            self._window(p.storm_off_minutes * 60, self.cadence_s),
         )
         active &= history_ready
         storm &= history_ready
@@ -140,8 +138,10 @@ def _prepare_case(data: dict) -> PreparedCase:
         raise ValueError("residual must be one-dimensional")
     magnitude = np.abs(residual)
     safe = np.where(np.isfinite(magnitude), magnitude, np.nan)
+
     def w(seconds: float, cap: int) -> int:
         return min(max(1, int(round(seconds / max(cadence_s, 1.0)))), cap)
+
     fast = _rolling_median(safe, w(5 * 60, 31))
     medium = _rolling_median(safe, w(15 * 60, 61))
     upper = _rolling_quantile(safe, w(30 * 60, 121), 0.75)
@@ -150,6 +150,7 @@ def _prepare_case(data: dict) -> PreparedCase:
     refs = data["refs"]
     return PreparedCase(
         residual=residual,
+        cadence_s=cadence_s,
         known=np.asarray(refs["known"], dtype=bool),
         active_ref=np.asarray(refs["active"], dtype=bool),
         storm_ref=np.asarray(refs["storm"], dtype=bool),
@@ -207,10 +208,7 @@ def _evaluate(cases: list[PreparedCase], profile: DetectorProfile) -> dict:
 
 def _coordinate_descent(cases: list[PreparedCase], base: DetectorProfile) -> DetectorProfile:
     profile = base
-    ordered = (
-        "active_nt", "storm_nt", "active_fast_ratio",
-        "storm_fast_ratio", "storm_upper_ratio", "storm_release_ratio",
-    )
+    ordered = ("active_nt", "storm_nt", "active_fast_ratio", "storm_fast_ratio", "storm_upper_ratio", "storm_release_ratio")
     for name in ordered:
         best = profile
         best_obj = _objective(_evaluate(cases, profile))
@@ -283,13 +281,7 @@ def main() -> None:
     output = {
         "status": "certified" if passed else "candidate",
         "profile": asdict(profile),
-        "selection": {
-            "method": "chronological coordinate descent over cached causal features",
-            "calibration_years": splits["calibration"],
-            "validation_years": splits["validation"],
-            "final_test_years": splits["test"],
-            "final_test_used": False,
-        },
+        "selection": {"method": "chronological coordinate descent over cached causal features", "calibration_years": splits["calibration"], "validation_years": splits["validation"], "final_test_years": splits["test"], "final_test_used": False},
         "calibration_score": calibration_score,
         "validation_score": validation_score,
         "validation_floors": {"min_precision": args.min_precision, "min_recall": args.min_recall, "min_f1": args.min_f1, "max_storm_far": args.max_storm_far},
