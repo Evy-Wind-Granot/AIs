@@ -31,6 +31,16 @@ def test_sustained_storm_is_detected_after_causal_warmup():
     assert not np.any(severe)
 
 
+def test_strong_short_excursion_can_confirm_storm():
+    """A real sharp excursion must not be missed solely because its onset is fast."""
+    residual = np.zeros(8 * 60, dtype=float)
+    residual[240:270] = 90.0
+    residual[270:330] = 45.0
+    flags = flag_activity(residual, cadence_s=60.0)
+    storm = np.isin(flags, STORM_LEVELS)
+    assert storm[255:330].mean() > 0.5
+
+
 def test_short_dip_does_not_split_storm_event():
     residual = np.zeros(10 * 60, dtype=float)
     residual[60:540] = 60.0
