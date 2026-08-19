@@ -129,10 +129,12 @@ def detect_activity_masks(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Return strictly-causal activity/severity masks and diagnostics.
 
-    Storm onset uses either sustained storm-level energy or a strong short
-    excursion with independent medium-timescale corroboration.  Storm release
-    is intentionally slower than onset: brief dips do not fragment a physical
-    disturbance into multiple events.
+    The detector deliberately separates *evidence* from *state*.  Moderate
+    activity may be established from corroborated shorter-timescale evidence,
+    while storm onset requires either sustained storm energy or a genuinely
+    strong excursion with independent medium-timescale support.  Storm release
+    is much slower than onset so one physical disturbance remains one episode
+    through realistic temporary dips.
     """
     x = np.asarray(residual, dtype=float)
     if x.ndim != 1:
@@ -166,49 +168,54 @@ def detect_activity_masks(
     for arr in arrays:
         arr[~np.isfinite(arr)] = 0.0
 
+    # Active evidence is deliberately more responsive than storm evidence.
+    # A 15-minute median is still the primary path; shorter/longer evidence
+    # can corroborate a real disturbance without allowing an isolated sample
+    # to become active.  This addresses the observed high precision / low
+    # recall failure of the previous detector.
     active_evidence = history_ready & (
         (medium >= active_threshold)
-        | ((slow >= 0.70 * active_threshold) & (medium >= 0.55 * active_threshold))
-        | ((slow_3h >= 0.55 * active_threshold) & (medium >= 0.50 * active_threshold))
-        | ((upper_30m >= 1.10 * active_threshold) & (medium >= 0.50 * active_threshold))
-        | ((fast >= 1.35 * active_threshold) & (medium >= 0.50 * active_threshold))
+        | ((slow >= 0.65 * active_threshold) & (medium >= 0.40 * active_threshold))
+        | ((slow_3h >= 0.55 * active_threshold) & (medium >= 0.40 * active_threshold))
+        | ((upper_30m >= 1.00 * active_threshold) & (medium >= 0.35 * active_threshold))
+        | ((fast >= 1.25 * active_threshold) & (medium >= 0.40 * active_threshold))
     )
 
-    # A storm can be established in two ways:
-    #   1) sustained storm-level 15-minute energy;
-    #   2) a genuinely strong short/30-minute excursion corroborated by
-    #      medium-term activity.  This restores sensitivity to storm onsets
-    #      that are sharp rather than slowly accumulating.
+    # Storm onset has a deliberately high-confidence fast path and a more
+    # conservative 30-minute corroboration path.  The latter is intentionally
+    # stricter than the previous release because the prior version recovered
+    # recall but admitted too many false storm samples.
     strong_short = (
-        (fast >= 1.55 * storm_threshold)
+        (fast >= 1.80 * storm_threshold)
         & (medium >= 0.55 * storm_threshold)
     )
     strong_30m = (
-        (upper_30m >= storm_threshold)
-        & (medium >= 0.65 * storm_threshold)
+        (upper_30m >= 1.10 * storm_threshold)
+        & (medium >= 0.70 * storm_threshold)
     )
     sustained = (
         (medium >= storm_threshold)
-        | ((slow >= storm_threshold) & (medium >= 0.70 * storm_threshold))
-        | ((slow_3h >= storm_threshold) & (medium >= 0.70 * storm_threshold))
+        | ((slow >= storm_threshold) & (medium >= 0.80 * storm_threshold))
+        | ((slow_3h >= storm_threshold) & (medium >= 0.80 * storm_threshold))
     )
     storm_evidence = history_ready & (sustained | strong_short | strong_30m)
 
     active = _hysteresis_mask(
         active_evidence,
-        history_ready & (medium <= 0.70 * active_threshold),
+        history_ready & (medium <= 0.60 * active_threshold),
         max(1, int(round(5 * 60 / cadence_s))),
         max(1, int(round(30 * 60 / cadence_s))),
     )
 
-    # Ten minutes confirms onset.  Sixty minutes of recovery evidence is
-    # required to end a storm, preventing short dips from creating separate
-    # events and preserving recall across realistic storm structure.
+    # Ten minutes confirms onset.  Three hours of recovery evidence is
+    # required to end a storm.  This is intentionally longer than the prior
+    # one-hour release: production event evaluation showed that short-lived
+    # dips were fragmenting one physical disturbance into multiple episodes.
     storm = _hysteresis_mask(
         storm_evidence,
         history_ready & (medium <= 0.65 * storm_threshold),
         max(1, int(round(10 * 60 / cadence_s))),
-        max(1, int(round(60 * 60 / cadence_s))),
+        max(1, int(round(3 * 3600 / cadence_s))),
     )
 
     major_evidence = history_ready & (
