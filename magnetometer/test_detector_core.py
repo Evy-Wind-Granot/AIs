@@ -34,6 +34,17 @@ def test_short_dip_does_not_split_storm_event():
     assert storm[180:420].mean() > 0.9
 
 
+def test_long_moderate_disturbance_uses_long_context():
+    # A long disturbance can be physically meaningful without remaining above
+    # the storm threshold at every short timescale.
+    residual = np.zeros(8 * 60, dtype=float)
+    residual[60:420] = 27.0
+    residual[210:225] = 12.0
+    flags = flag_activity(residual, cadence_s=60.0, active_threshold=15.0, storm_threshold=35.0)
+    storm = np.isin(flags, ["minor_storm", "major_storm", "severe_storm"])
+    assert storm[150:360].mean() > 0.75
+
+
 def test_nan_samples_are_safe():
     residual = np.full(120, np.nan, dtype=float)
     residual[30:90] = 20.0
