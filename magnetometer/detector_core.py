@@ -3,8 +3,8 @@
 
 The inference path uses robust trailing statistics, causal hysteresis, explicit
 warm-up, and no future samples. Calibrated detector profiles supply deployment
-parameters. The live path avoids repeated profile I/O, redundant diagnostics,
-and anomaly statistics unless diagnostics explicitly request them.
+parameters. The hot path avoids repeated profile I/O and redundant allocations
+while preserving the detector's existing classification semantics.
 """
 from __future__ import annotations
 
@@ -289,19 +289,14 @@ def flag_activity(
     severe_threshold: Optional[float] = None,
     profile: Optional[DetectorProfile] = None,
 ) -> np.ndarray:
-    """Classify residuals using the certified profile on the optimized live path."""
+    """Classify residuals using the certified profile while preserving anomaly output."""
     x = np.asarray(residual, dtype=float)
     p = profile or load_detector_profile()
-    if active_threshold is None:
-        active_threshold = p.active_nt
-    if storm_threshold is None:
-        storm_threshold = p.storm_nt
-    if unsettled_threshold is None:
-        unsettled_threshold = p.unsettled_nt
-    if major_threshold is None:
-        major_threshold = p.major_nt
-    if severe_threshold is None:
-        severe_threshold = p.severe_nt
+    active_threshold = p.active_nt if active_threshold is None else float(active_threshold)
+    storm_threshold = p.storm_nt if storm_threshold is None else float(storm_threshold)
+    unsettled_threshold = p.unsettled_nt if unsettled_threshold is None else float(unsettled_threshold)
+    major_threshold = p.major_nt if major_threshold is None else float(major_threshold)
+    severe_threshold = p.severe_nt if severe_threshold is None else float(severe_threshold)
 
     active, storm, major, severe, diagnostics = detect_activity_masks(
         x,
@@ -312,7 +307,7 @@ def flag_activity(
         major_threshold=major_threshold,
         severe_threshold=severe_threshold,
         profile=p,
-        include_anomaly=False,
+        include_anomaly=True,
     )
     medium = diagnostics["medium_15m_nt"]
     ready = diagnostics["history_ready"]
@@ -322,5 +317,7 @@ def flag_activity(
     flags[storm] = "minor_storm"
     flags[major] = "major_storm"
     flags[severe] = "severe_storm"
+    anomaly = diagnostics["anomaly"]
+    flags[anomaly & ready & ~active & ~storm] = "anomaly"
     flags[~np.isfinite(x)] = "quiet"
     return flags
