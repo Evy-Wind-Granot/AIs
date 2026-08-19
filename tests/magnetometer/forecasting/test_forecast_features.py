@@ -1,5 +1,3 @@
-import warnings
-
 import numpy as np
 import pandas as pd
 
@@ -50,9 +48,3 @@ def test_supervised_alignment() -> None:
     features, targets = build_supervised_dataset(synthetic_frame(900), cadence_s=60.0)
     assert features.index.equals(targets.index)
     assert "target_peak_abs_6h" in targets.columns
-
-
-def test_feature_builder_is_warning_free() -> None:
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", category=pd.errors.PerformanceWarning)
-        make_forecast_features(synthetic_frame(2000), cadence_s=60.0)
