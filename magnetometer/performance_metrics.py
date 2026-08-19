@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Production magnetometer metrics and validation primitives.
 
-The module is intentionally dependency-light and shares production thresholds
-with ``magnetometer_demo.py``. The scoring path applies the same smoothed,
-persistent detection policy used by the production detector.
+The scoring path uses the same deterministic production detector as the live
+demo.  Calibration may supply active/storm thresholds; the final test set is
+never used to choose them.
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import argparse
 import json
 import math
 import sys
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -23,8 +22,8 @@ REPO_ROOT = HERE.parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+from detector_core import detect_activity_masks  # noqa: E402
 from magnetometer_demo import (  # noqa: E402
-    ANOMALY_DELTA_NT,
     PROD_ACTIVE_NT,
     PROD_MAJOR_STORM_NT,
     PROD_MINOR_STORM_NT,
@@ -150,26 +149,23 @@ def reference_masks(kp: pd.Series, dst: pd.Series) -> Dict[str, np.ndarray]:
     return {"known": known, "kp_known": kp_known, "dst_known": dst_known, "active": active, "storm": storm}
 
 
-def _persistent_mask(mask: np.ndarray, min_samples: int) -> np.ndarray:
-    mask = np.asarray(mask, dtype=bool)
-    out = np.zeros_like(mask)
-    run = 0
-    for i, value in enumerate(mask):
-        run = run + 1 if value else 0
-        if run >= min_samples:
-            out[i - min_samples + 1:i + 1] = True
-    return out
-
-
-def production_detection_masks(residual: np.ndarray, cadence_s: float, active_threshold: float, storm_threshold: float) -> Tuple[np.ndarray, np.ndarray]:
-    magnitude = np.abs(np.asarray(residual, dtype=float))
-    win = max(1, min(31, int(round(15 * 60 / max(cadence_s, 1.0)))))
-    if win % 2 == 0:
-        win += 1
-    smooth = pd.Series(magnitude).rolling(win, center=True, min_periods=1).median().to_numpy()
-    active_min = max(1, int(round(10 * 60 / max(cadence_s, 1.0))))
-    storm_min = max(1, int(round(15 * 60 / max(cadence_s, 1.0))))
-    return _persistent_mask(smooth > active_threshold, active_min), _persistent_mask(smooth > storm_threshold, storm_min)
+def production_detection_masks(
+    residual: np.ndarray,
+    cadence_s: float,
+    active_threshold: float,
+    storm_threshold: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return certification masks from the shared deterministic detector."""
+    active, storm, _major, _severe, _diagnostics = detect_activity_masks(
+        residual,
+        cadence_s=cadence_s,
+        active_threshold=active_threshold,
+        storm_threshold=storm_threshold,
+        unsettled_threshold=PROD_UNSETTLED_NT,
+        major_threshold=PROD_MAJOR_STORM_NT,
+        severe_threshold=PROD_SEVERE_STORM_NT,
+    )
+    return active, storm
 
 
 def bool_events(mask: np.ndarray, cadence_s: float, merge_gap_s: float = 0.0, min_duration_s: float = 0.0) -> List[Tuple[int, int]]:
@@ -205,7 +201,8 @@ def match_events(predicted: Sequence[Tuple[int, int]], reference: Sequence[Tuple
     for ov, pi, ri in pairs:
         if pi in used_p or ri in used_r:
             continue
-        used_p.add(pi); used_r.add(ri); matches.append({"predicted_index": pi, "reference_index": ri, "overlap_seconds": float(ov * cadence_s)})
+        used_p.add(pi); used_r.add(ri)
+        matches.append({"predicted_index": pi, "reference_index": ri, "overlap_seconds": float(ov * cadence_s)})
     tp = len(matches); fp = len(predicted) - tp; fn = len(reference) - tp
     precision = tp / (tp + fp) if tp + fp else None
     recall = tp / (tp + fn) if tp + fn else None
@@ -248,7 +245,19 @@ def _single_case(observatory: str, start_date: str, days: int, output_dir: Path)
     refs = reference_masks(kp_aligned, dst_aligned)
     score = score_thresholds(residual, refs, cadence, PROD_ACTIVE_NT, PROD_MINOR_STORM_NT)
     f = finite(residual)
-    report = {"observatory": observatory, "period": start_date, "days": days, "samples": len(series), "valid_samples": int(series.notna().sum()), "cadence_seconds": cadence, "baseline_quality_nt": {"mae": float(np.mean(np.abs(f))), "rmse": float(np.sqrt(np.mean(f ** 2))), "bias": float(np.mean(f)), "median_absolute_error": float(np.median(np.abs(f))), "p95_absolute_error": float(np.percentile(np.abs(f), 95))}, "reference_coverage": {"kp": float(refs["kp_known"].mean()), "dst": float(refs["dst_known"].mean()), "overall": float(refs["known"].mean())}, "production_thresholds": {"active_nt": PROD_ACTIVE_NT, "storm_nt": PROD_MINOR_STORM_NT}, "scores": score}
+    report = {
+        "observatory": observatory, "period": start_date, "days": days,
+        "samples": len(series), "valid_samples": int(series.notna().sum()),
+        "cadence_seconds": cadence,
+        "baseline_quality_nt": {
+            "mae": float(np.mean(np.abs(f))), "rmse": float(np.sqrt(np.mean(f ** 2))),
+            "bias": float(np.mean(f)), "median_absolute_error": float(np.median(np.abs(f))),
+            "p95_absolute_error": float(np.percentile(np.abs(f), 95)),
+        },
+        "reference_coverage": {"kp": float(refs["kp_known"].mean()), "dst": float(refs["dst_known"].mean()), "overall": float(refs["known"].mean())},
+        "production_thresholds": {"active_nt": PROD_ACTIVE_NT, "storm_nt": PROD_MINOR_STORM_NT},
+        "scores": score,
+    }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / f"magnetometer_performance_{observatory}_{start_date}_{days}d.json").write_text(json.dumps(report, indent=2))
     return report
