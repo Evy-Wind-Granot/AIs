@@ -14,7 +14,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from .. import calibrate_detector as cd
@@ -32,7 +31,7 @@ def _load_one(obs: str, case: pg.Case):
 
 
 def _check_sufficiency(successes, observatories, splits):
-    counts = Counter((obs, row["split"], int(row["year"]), row["class_name"]) for obs, case, data in successes for row in [case])
+    counts = Counter((obs, case.split, int(case.year), case.class_name) for obs, case, _data in successes)
     shortages = []
     for obs in observatories:
         for split in ("calibration", "validation"):
@@ -140,7 +139,7 @@ def main() -> None:
     val_score = cd._evaluate(val_prepared, profile)
     passed = _validation_ok(val_score)
 
-    output = {"status":"certified" if passed else "candidate","profile":cd.asdict(profile) if hasattr(cd, "asdict") else {k:getattr(profile,k) for k in profile.__dataclass_fields__},"sampling_policy":{"target_cases_per_station_year":args.cases_per_class_per_year,"minimum_station_cases":MIN_STATION_CASES,"minimum_pooled_cases_per_year":MIN_POOLED_CASES_PER_YEAR,"minimum_cases_per_class_per_split":MIN_CASES_PER_CLASS_PER_SPLIT,"under_supplied_years_retain_all_independent_usable_cases":True},"selection":{"calibration_years":splits["calibration"],"validation_years":splits["validation"],"final_test_years":splits["test"],"final_test_used":False,"candidate_pool_per_class_per_year":pool_size},"calibration":cal_score,"validation":val_score,"failed_source_cases":failures,"passed_validation":passed}
+    output = {"status":"certified" if passed else "candidate","profile":asdict(profile),"sampling_policy":{"target_cases_per_station_year":args.cases_per_class_per_year,"minimum_station_cases":MIN_STATION_CASES,"minimum_pooled_cases_per_year":MIN_POOLED_CASES_PER_YEAR,"minimum_cases_per_class_per_split":MIN_CASES_PER_CLASS_PER_SPLIT,"under_supplied_years_retain_all_independent_usable_cases":True},"selection":{"calibration_years":splits["calibration"],"validation_years":splits["validation"],"final_test_years":splits["test"],"final_test_used":False,"candidate_pool_per_class_per_year":pool_size},"calibration":cal_score,"validation":val_score,"failed_source_cases":failures,"passed_validation":passed}
     path = Path(args.profile_path).resolve()
     if passed:
         path.write_text(json.dumps(output, indent=2) + "\n")
