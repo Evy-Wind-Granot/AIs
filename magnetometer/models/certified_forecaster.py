@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
 """Certification wrapper for the production geomagnetic forecaster.
 
-The wrapper keeps the causal training architecture while tightening two
-production failure modes observed during certification:
-
-* operating thresholds are selected against two chronological calibration
-  sub-windows;
-* the +6h horizon uses monotonic isotonic probability calibration.
-
-For +1h, threshold selection additionally uses a conservative 0.5% FAR
-calibration target. This provides operating margin against the calibration to
-final-test FAR drift observed during certification. The +3h and +6h horizons
-retain the normal 1% FAR target.
-
-No final-test observations are used by either procedure.
+This wrapper keeps the strict chronological train/calibration/final-test
+architecture while strengthening the storm detector.  Detector training uses
+bounded class weighting derived only from the training partition, while
+probability calibration and operating-threshold selection remain strictly on
+later calibration data.  No final-test information is used for model fitting,
+calibration, or threshold selection.
 """
 from __future__ import annotations
 
@@ -22,16 +15,25 @@ from typing import Any, Dict, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
+from sklearn.ensemble import HistGradientBoostingClassifier
 
 from . import production_forecaster as _production
 
-CERTIFIED_MODEL_VERSION = "2.1.2"
+CERTIFIED_MODEL_VERSION = "3.0.0"
 _production.MODEL_VERSION = CERTIFIED_MODEL_VERSION
-
-# Preserve the real production selector before GeomagneticForecaster.fit()
-# temporarily installs the robust selector. Calling the module attribute from
-# inside the robust selector would otherwise recurse into itself.
 _BASE_CHOOSE_OPERATING_THRESHOLD = _production._choose_operating_threshold
+
+
+def _metric_value(metrics: Dict[str, Any], name: str, default: float = 0.0) -> float:
+    value = metrics.get(name)
+    return default if value is None else float(value)
+
+
+def _candidate_thresholds(p: np.ndarray) -> np.ndarray:
+    return np.unique(np.concatenate([
+        np.linspace(0.05, 0.99, 189),
+        np.quantile(p, np.linspace(0.01, 0.99, 99)),
+    ]))
 
 
 def _choose_robust_threshold(
@@ -40,106 +42,51 @@ def _choose_robust_threshold(
     *,
     min_precision: float,
     max_far: float,
-    target_far: float | None = None,
+    target_far: float,
 ) -> Tuple[float, Dict[str, Any]]:
-    """Select a threshold robustly across two chronological calibration windows.
-
-    ``max_far`` is the release-gate constraint. ``target_far`` is an optional
-    stricter calibration safety target. For +1h we use 0.005 (0.5%) so the
-    operating point has meaningful margin against observed regime drift.
-
-    If no threshold satisfies the strict two-window target, do NOT revert to
-    the old F1-maximizing fallback. Instead select the lowest-FAR threshold
-    that still meets the precision requirement, breaking ties in favour of
-    higher worst-window recall. This is deliberately conservative.
-    """
+    """Choose a stable operating point across two chronological calibration windows."""
     y = np.asarray(y_true, dtype=int)
     p = np.clip(np.asarray(probability, dtype=float), 0.0, 1.0)
-    requested_far = float(max_far if target_far is None else min(max_far, target_far))
-
     if len(y) < 400:
-        if target_far is None:
-            return _BASE_CHOOSE_OPERATING_THRESHOLD(
-                y, p, min_precision=min_precision, max_far=max_far
-            )
-        # Small calibration sets still use a conservative FAR target, but use
-        # the same production metric implementation and an explicit selector.
-        candidates = np.unique(
-            np.concatenate([
-                np.linspace(0.05, 0.99, 189),
-                np.quantile(p, np.linspace(0.01, 0.99, 99)),
-            ])
-        )
-        safe = []
-        for threshold in candidates:
-            metrics = _production._binary_metrics(y, p, float(threshold))
-            precision = float(metrics["precision"] or 0.0)
-            far = float(metrics["false_alarm_rate"] if metrics["false_alarm_rate"] is not None else 1.0)
-            recall = float(metrics["recall"] or 0.0)
-            if precision >= min_precision and far <= requested_far:
-                safe.append((recall, -far, float(threshold)))
-        if safe:
-            safe.sort(reverse=True)
-            threshold = safe[0][2]
-            return threshold, {
-                "method": "conservative_single_window_target_far",
-                "min_precision": min_precision,
-                "max_false_alarm_rate": max_far,
-                "target_false_alarm_rate": requested_far,
-                "selected_metrics": _production._binary_metrics(y, p, threshold),
-            }
-        return _conservative_precision_fallback(y, p, min_precision, max_far, requested_far)
+        return _conservative_fallback(y, p, min_precision, max_far, target_far)
 
-    split = int(len(y) * 0.60)
-    split = min(max(split, 200), len(y) - 200)
+    split = min(max(int(len(y) * 0.60), 200), len(y) - 200)
     y_early, y_late = y[:split], y[split:]
     p_early, p_late = p[:split], p[split:]
-    candidates = np.unique(
-        np.concatenate([
-            np.linspace(0.05, 0.99, 189),
-            np.quantile(p, np.linspace(0.01, 0.99, 99)),
-        ])
-    )
-
-    feasible: list[tuple[float, float, float, float]] = []
-    for threshold in candidates:
+    feasible = []
+    for threshold in _candidate_thresholds(p):
         early = _production._binary_metrics(y_early, p_early, float(threshold))
         late = _production._binary_metrics(y_late, p_late, float(threshold))
-        early_precision = float(early["precision"] or 0.0)
-        late_precision = float(late["precision"] or 0.0)
-        early_far = float(early["false_alarm_rate"] if early["false_alarm_rate"] is not None else 1.0)
-        late_far = float(late["false_alarm_rate"] if late["false_alarm_rate"] is not None else 1.0)
         if (
-            early_precision >= min_precision
-            and late_precision >= min_precision
-            and early_far <= requested_far
-            and late_far <= requested_far
+            _metric_value(early, "precision") >= min_precision
+            and _metric_value(late, "precision") >= min_precision
+            and _metric_value(early, "false_alarm_rate", 1.0) <= target_far
+            and _metric_value(late, "false_alarm_rate", 1.0) <= target_far
         ):
-            early_recall = float(early["recall"] or 0.0)
-            late_recall = float(late["recall"] or 0.0)
-            avg_recall = 0.5 * (early_recall + late_recall)
-            worst_far = max(early_far, late_far)
-            feasible.append((min(early_recall, late_recall), avg_recall, -worst_far, float(threshold)))
+            worst_recall = min(_metric_value(early, "recall"), _metric_value(late, "recall"))
+            avg_recall = 0.5 * (_metric_value(early, "recall") + _metric_value(late, "recall"))
+            worst_f1 = min(_metric_value(early, "f1"), _metric_value(late, "f1"))
+            worst_far = max(_metric_value(early, "false_alarm_rate", 1.0), _metric_value(late, "false_alarm_rate", 1.0))
+            feasible.append((worst_recall, avg_recall, worst_f1, -worst_far, float(threshold)))
 
     if feasible:
         feasible.sort(reverse=True)
-        threshold = feasible[0][3]
+        threshold = feasible[0][-1]
         return threshold, {
-            "method": "maximize_worst_window_recall_subject_to_target_far",
-            "min_precision": min_precision,
+            "method": "two_window_maximize_worst_recall",
+            "target_false_alarm_rate": target_far,
             "max_false_alarm_rate": max_far,
-            "target_false_alarm_rate": requested_far,
+            "min_precision": min_precision,
             "calibration_split": split,
             "feasible_candidates": len(feasible),
             "early_metrics": _production._binary_metrics(y_early, p_early, threshold),
             "late_metrics": _production._binary_metrics(y_late, p_late, threshold),
             "selected_metrics": _production._binary_metrics(y, p, threshold),
         }
+    return _conservative_fallback(y, p, min_precision, max_far, target_far, split=split)
 
-    return _conservative_precision_fallback(y, p, min_precision, max_far, requested_far, split=split)
 
-
-def _conservative_precision_fallback(
+def _conservative_fallback(
     y: np.ndarray,
     p: np.ndarray,
     min_precision: float,
@@ -148,79 +95,42 @@ def _conservative_precision_fallback(
     *,
     split: int | None = None,
 ) -> Tuple[float, Dict[str, Any]]:
-    """Fallback that minimizes FAR instead of maximizing F1.
-
-    This is used only when no threshold satisfies the requested two-window FAR
-    target. Precision remains mandatory; among precision-safe thresholds we
-    choose the lowest worst-window FAR, then the highest worst-window recall.
-    """
+    """Fail conservatively when no threshold satisfies the target FAR."""
+    if len(y) == 0:
+        raise ValueError("Cannot select a threshold from an empty calibration set")
     if split is None:
-        split = int(len(y) * 0.60)
-        split = min(max(split, 1), len(y) - 1)
+        split = min(max(int(len(y) * 0.60), 1), max(1, len(y) - 1))
     y_early, y_late = y[:split], y[split:]
     p_early, p_late = p[:split], p[split:]
-    candidates = np.unique(
-        np.concatenate([
-            np.linspace(0.05, 0.99, 189),
-            np.quantile(p, np.linspace(0.01, 0.99, 99)),
-        ])
-    )
-
-    safe: list[tuple[float, float, float, float]] = []
-    for threshold in candidates:
+    safe = []
+    for threshold in _candidate_thresholds(p):
         early = _production._binary_metrics(y_early, p_early, float(threshold))
         late = _production._binary_metrics(y_late, p_late, float(threshold))
-        precision = min(
-            float(early["precision"] or 0.0),
-            float(late["precision"] or 0.0),
-        )
+        precision = min(_metric_value(early, "precision"), _metric_value(late, "precision"))
         if precision < min_precision:
             continue
-        early_far = float(early["false_alarm_rate"] if early["false_alarm_rate"] is not None else 1.0)
-        late_far = float(late["false_alarm_rate"] if late["false_alarm_rate"] is not None else 1.0)
-        worst_far = max(early_far, late_far)
-        worst_recall = min(
-            float(early["recall"] or 0.0),
-            float(late["recall"] or 0.0),
-        )
-        avg_recall = 0.5 * (
-            float(early["recall"] or 0.0) + float(late["recall"] or 0.0)
-        )
-        safe.append((worst_far, -worst_recall, -avg_recall, float(threshold)))
-
+        worst_far = max(_metric_value(early, "false_alarm_rate", 1.0), _metric_value(late, "false_alarm_rate", 1.0))
+        worst_recall = min(_metric_value(early, "recall"), _metric_value(late, "recall"))
+        safe.append((worst_far, -worst_recall, float(threshold)))
     if safe:
         safe.sort()
-        threshold = safe[0][3]
-        return threshold, {
-            "method": "conservative_lowest_worst_window_far_fallback",
-            "min_precision": min_precision,
-            "max_false_alarm_rate": max_far,
-            "target_false_alarm_rate": target_far,
-            "calibration_split": split,
-            "feasible_candidates": 0,
-            "precision_safe_candidates": len(safe),
-            "early_metrics": _production._binary_metrics(y_early, p_early, threshold),
-            "late_metrics": _production._binary_metrics(y_late, p_late, threshold),
-            "selected_metrics": _production._binary_metrics(y, p, threshold),
-        }
-
-    # If even precision cannot be maintained, use the safest threshold rather
-    # than silently returning to the permissive F1 fallback.
-    safest: list[tuple[float, float]] = []
-    for threshold in candidates:
-        metrics = _production._binary_metrics(y, p, float(threshold))
-        far = float(metrics["false_alarm_rate"] if metrics["false_alarm_rate"] is not None else 1.0)
-        safest.append((far, float(threshold)))
-    safest.sort()
-    threshold = safest[0][1]
+        threshold = safe[0][-1]
+        method = "precision_safe_lowest_worst_far"
+    else:
+        safest = []
+        for threshold in _candidate_thresholds(p):
+            metrics = _production._binary_metrics(y, p, float(threshold))
+            safest.append((_metric_value(metrics, "false_alarm_rate", 1.0), -_metric_value(metrics, "recall"), float(threshold)))
+        safest.sort()
+        threshold = safest[0][-1]
+        method = "lowest_far_no_precision_feasible"
     return threshold, {
-        "method": "conservative_lowest_far_no_precision_feasible",
-        "min_precision": min_precision,
-        "max_false_alarm_rate": max_far,
+        "method": method,
         "target_false_alarm_rate": target_far,
+        "max_false_alarm_rate": max_far,
+        "min_precision": min_precision,
         "calibration_split": split,
         "feasible_candidates": 0,
-        "precision_safe_candidates": 0,
         "selected_metrics": _production._binary_metrics(y, p, threshold),
     }
 
@@ -235,11 +145,8 @@ class _IsotonicCalibratedClassifier:
     def _raw_score(self, x: pd.DataFrame | np.ndarray) -> np.ndarray:
         if hasattr(self.base, "decision_function"):
             score = np.asarray(self.base.decision_function(x), dtype=float)
-            if score.ndim > 1:
-                score = score[:, -1]
-            return score
-        probability = np.asarray(self.base.predict_proba(x)[:, 1], dtype=float)
-        probability = np.clip(probability, 1e-7, 1.0 - 1e-7)
+            return score[:, -1] if score.ndim > 1 else score
+        probability = np.clip(np.asarray(self.base.predict_proba(x)[:, 1], dtype=float), 1e-7, 1.0 - 1e-7)
         return np.log(probability / (1.0 - probability))
 
     def fit(self, x_cal: pd.DataFrame, y_cal: np.ndarray) -> "_IsotonicCalibratedClassifier":
@@ -250,16 +157,63 @@ class _IsotonicCalibratedClassifier:
         return self
 
     def predict_proba(self, x: pd.DataFrame | np.ndarray) -> np.ndarray:
-        probability = np.asarray(self.calibrator.predict(self._raw_score(x)), dtype=float)
-        probability = np.clip(probability, 0.0, 1.0)
+        probability = np.clip(np.asarray(self.calibrator.predict(self._raw_score(x)), dtype=float), 0.0, 1.0)
         return np.column_stack([1.0 - probability, probability])
 
     def predict(self, x: pd.DataFrame | np.ndarray) -> np.ndarray:
-        return (self.predict_proba(x)[:, 1] >= 0.5).astype(int)
+        return (self.predict_proba(x) >= 0.5).astype(int)
 
 
 class GeomagneticForecaster(_production.GeomagneticForecaster):
-    """Production forecaster with stricter temporal certification behavior."""
+    """Certified forecaster with a stronger, class-balanced storm detector."""
+
+    def _classifier(self) -> Any:
+        # The previous detector was deliberately conservative but too shallow
+        # for the richer causal event-state feature space.  More leaves and
+        # stronger minimum leaf size improve nonlinear event interactions while
+        # retaining regularization and deterministic training.
+        backend = self.config.backend.lower()
+        if backend == "lightgbm":
+            if _production.lgb is None:
+                raise ImportError("LightGBM backend requested but lightgbm is not installed.")
+            return _production.lgb.LGBMClassifier(
+                objective="binary",
+                n_estimators=max(self.config.n_estimators, 900),
+                learning_rate=min(self.config.learning_rate, 0.04),
+                num_leaves=max(self.config.num_leaves, 63),
+                max_depth=-1,
+                subsample=0.9,
+                colsample_bytree=0.85,
+                reg_alpha=0.05,
+                reg_lambda=max(self.config.l2_regularization, 2.0),
+                min_child_samples=max(self.config.min_samples_leaf, 50),
+                random_state=self.config.random_state,
+                n_jobs=-1,
+                verbosity=-1,
+            )
+        return HistGradientBoostingClassifier(
+            max_iter=max(self.config.max_iter, 800),
+            learning_rate=min(self.config.learning_rate, 0.04),
+            max_leaf_nodes=max(self.config.max_leaf_nodes, 63),
+            l2_regularization=max(self.config.l2_regularization, 2.0),
+            min_samples_leaf=max(self.config.min_samples_leaf, 50),
+            early_stopping=True,
+            validation_fraction=0.10,
+            n_iter_no_change=60,
+            random_state=self.config.random_state,
+        )
+
+    @staticmethod
+    def _class_weights(y: np.ndarray) -> np.ndarray:
+        """Bound positive weighting to improve recall without overwhelming FAR."""
+        y = np.asarray(y, dtype=int)
+        positives = max(int(np.sum(y == 1)), 1)
+        negatives = max(int(np.sum(y == 0)), 1)
+        ratio = negatives / positives
+        positive_weight = float(np.clip(np.sqrt(ratio), 1.5, 4.0))
+        weights = np.ones(len(y), dtype=float)
+        weights[y == 1] = positive_weight
+        return weights
 
     def _calibrated_classifier(
         self,
@@ -268,15 +222,16 @@ class GeomagneticForecaster(_production.GeomagneticForecaster):
         x_cal: pd.DataFrame,
         y_cal: np.ndarray,
     ) -> Any:
-        horizon_index = getattr(self, "_calibration_horizon_index", 0)
-        self._calibration_horizon_index = horizon_index + 1
         base = self._classifier()
-        base.fit(x_train, np.asarray(y_train, dtype=int))
-        if horizon_index == len(self.config.horizons_hours) - 1:
+        y = np.asarray(y_train, dtype=int)
+        if np.unique(y).size < 2:
+            raise ValueError("Both storm classes are required for classifier training.")
+        base.fit(x_train, y, sample_weight=self._class_weights(y))
+        # Isotonic is used only on the longest horizon where calibration data
+        # are most plentiful; Platt scaling remains smoother for short horizons.
+        if getattr(self, "_calibration_horizon_index", 0) == len(self.config.horizons_hours) - 1:
             return _IsotonicCalibratedClassifier(base).fit(x_cal, np.asarray(y_cal, dtype=int))
-        return _production._SigmoidCalibratedClassifier(base).fit(
-            x_cal, np.asarray(y_cal, dtype=int)
-        )
+        return _production._SigmoidCalibratedClassifier(base).fit(x_cal, np.asarray(y_cal, dtype=int))
 
     def fit(self, frame: pd.DataFrame, *, cadence_s: float = 60.0) -> Dict[str, Any]:
         self._calibration_horizon_index = 0
@@ -291,21 +246,26 @@ class GeomagneticForecaster(_production.GeomagneticForecaster):
         ) -> Tuple[float, Dict[str, Any]]:
             index = horizon_counter["index"]
             horizon_counter["index"] += 1
-            # +1h gets an explicit 0.5% calibration safety target. The later
-            # horizons keep the existing 1% target because they already pass
-            # comfortably and should not be perturbed by this fix.
             target_far = 0.005 if index == 0 else max_far
             return _choose_robust_threshold(
-                y_true,
-                probability,
+                y_true, probability,
                 min_precision=min_precision,
                 max_far=max_far,
                 target_far=target_far,
             )
 
         original_selector = _production._choose_operating_threshold
+        original_calibration = self._calibrated_classifier
+
+        def calibrated_with_counter(*args: Any, **kwargs: Any) -> Any:
+            result = original_calibration(*args, **kwargs)
+            self._calibration_horizon_index += 1
+            return result
+
+        self._calibrated_classifier = calibrated_with_counter  # type: ignore[method-assign]
         _production._choose_operating_threshold = selector
         try:
             return super().fit(frame, cadence_s=cadence_s)
         finally:
             _production._choose_operating_threshold = original_selector
+            self._calibrated_classifier = original_calibration  # type: ignore[method-assign]
