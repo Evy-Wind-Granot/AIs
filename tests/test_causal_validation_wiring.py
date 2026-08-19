@@ -13,10 +13,12 @@ def test_canonical_calibrator_installs_causal_baseline():
     import magnetometer.detecting.calibrate  # noqa: F401
 
     assert pg.pm.compute_qdc_baseline is causal_baseline.compute_causal_qdc_baseline
-    assert str(pg.DEFAULT_CACHE_DIR).endswith("case_cache_causal_v4")
+    assert str(pg.DEFAULT_CACHE_DIR).endswith("case_cache_causal_v5")
 
 
 def test_causal_cache_namespace_is_distinct_from_legacy():
     legacy = Path(__file__).resolve().parents[1] / "magnetometer" / "data" / "case_cache"
-    fresh = Path(__file__).resolve().parents[1] / "magnetometer" / "data" / "case_cache_causal_v4"
+    old_causal = Path(__file__).resolve().parents[1] / "magnetometer" / "data" / "case_cache_causal_v4"
+    fresh = Path(__file__).resolve().parents[1] / "magnetometer" / "data" / "case_cache_causal_v5"
     assert fresh != legacy
+    assert fresh != old_causal
