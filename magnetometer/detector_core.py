@@ -1,29 +1,121 @@
 #!/usr/bin/env python3
-"""Deterministic, strictly-causal production detector.
+"""Deterministic, strictly-causal production magnetometer detector.
 
-The detector is shared by live/demo and certification paths.  It uses only the
-current sample and trailing historical data.  No centered windows, future data,
-or retroactive gap filling are permitted.
-
-Design goals:
-* conservative against isolated telemetry spikes;
-* sensitive to sustained and genuinely strong geomagnetic excursions;
-* explicit causal warm-up;
-* state hysteresis so one physical disturbance is not fragmented into many
-  events by short threshold dips;
-* nested severity levels and safe handling of missing samples.
+The inference path is intentionally simple and auditable: robust trailing
+statistics, causal hysteresis, explicit warm-up, and no future samples.
+Thresholds are not hard-coded deployment policy; a validated detector profile
+may supply them after calibration on historical data.
 """
 from __future__ import annotations
 
-from typing import Dict, Tuple
+import json
+import os
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 DEFAULT_UNSETTLED_NT = 10.0
+DEFAULT_ACTIVE_NT = 15.0
+DEFAULT_STORM_NT = 35.0
 DEFAULT_MAJOR_STORM_NT = 100.0
 DEFAULT_SEVERE_STORM_NT = 200.0
 DEFAULT_ANOMALY_DELTA_NT = 100.0
+
+PROFILE_ENV = "MAGNETOMETER_DETECTOR_PROFILE"
+PROFILE_PATH = Path(__file__).resolve().with_name("detector_profile.json")
+
+
+@dataclass(frozen=True)
+class DetectorProfile:
+    """Deployment parameters produced by calibration, not hand tuning."""
+
+    active_nt: float = DEFAULT_ACTIVE_NT
+    storm_nt: float = DEFAULT_STORM_NT
+    unsettled_nt: float = DEFAULT_UNSETTLED_NT
+    major_nt: float = DEFAULT_MAJOR_STORM_NT
+    severe_nt: float = DEFAULT_SEVERE_STORM_NT
+
+    # Evidence multipliers.  These are deliberately bounded by validation.
+    active_slow_ratio: float = 0.65
+    active_slow_3h_ratio: float = 0.55
+    active_upper_ratio: float = 1.00
+    active_fast_ratio: float = 1.25
+    active_medium_slow_ratio: float = 0.40
+    active_medium_upper_ratio: float = 0.35
+
+    storm_fast_ratio: float = 1.80
+    storm_fast_medium_ratio: float = 0.55
+    storm_upper_ratio: float = 1.10
+    storm_upper_medium_ratio: float = 0.70
+    storm_medium_ratio: float = 0.80
+    storm_release_ratio: float = 0.65
+
+    active_on_minutes: float = 5.0
+    active_off_minutes: float = 30.0
+    storm_on_minutes: float = 10.0
+    storm_off_minutes: float = 180.0
+
+    major_upper_ratio: float = 0.90
+    major_fast_ratio: float = 1.15
+    major_medium_ratio: float = 0.80
+    severe_upper_ratio: float = 0.90
+    severe_fast_ratio: float = 1.10
+    severe_medium_ratio: float = 0.80
+
+    @classmethod
+    def from_dict(cls, value: Dict[str, object]) -> "DetectorProfile":
+        allowed = {f.name for f in cls.__dataclass_fields__.values()}
+        data = {k: value[k] for k in allowed if k in value}
+        profile = cls(**data)
+        profile.validate()
+        return profile
+
+    def validate(self) -> None:
+        numeric = asdict(self)
+        if not all(np.isfinite(float(v)) for v in numeric.values()):
+            raise ValueError("detector profile contains non-finite values")
+        if not (0 < self.active_nt < self.storm_nt <= self.major_nt <= self.severe_nt):
+            raise ValueError("profile thresholds must satisfy active < storm <= major <= severe")
+        if not (0 < self.unsettled_nt <= self.active_nt):
+            raise ValueError("unsettled threshold must be positive and <= active threshold")
+        if not (0 < self.active_on_minutes <= self.active_off_minutes <= 24 * 60):
+            raise ValueError("invalid active hysteresis durations")
+        if not (0 < self.storm_on_minutes <= self.storm_off_minutes <= 24 * 60):
+            raise ValueError("invalid storm hysteresis durations")
+        bounded = (
+            self.active_slow_ratio, self.active_slow_3h_ratio,
+            self.active_upper_ratio, self.active_fast_ratio,
+            self.active_medium_slow_ratio, self.active_medium_upper_ratio,
+            self.storm_fast_ratio, self.storm_fast_medium_ratio,
+            self.storm_upper_ratio, self.storm_upper_medium_ratio,
+            self.storm_medium_ratio, self.storm_release_ratio,
+            self.major_upper_ratio, self.major_fast_ratio, self.major_medium_ratio,
+            self.severe_upper_ratio, self.severe_fast_ratio, self.severe_medium_ratio,
+        )
+        if any(v <= 0 or v > 3.0 for v in bounded):
+            raise ValueError("detector evidence multipliers are outside safe bounds")
+
+
+def load_detector_profile(path: Optional[Path | str] = None) -> DetectorProfile:
+    """Load a certified profile; reject malformed or uncertified profiles.
+
+    A missing profile is safe and deterministic: the built-in baseline is used.
+    A present but malformed/uncertified profile is *not* silently accepted.
+    """
+    candidate = Path(path or os.environ.get(PROFILE_ENV, PROFILE_PATH))
+    if not candidate.exists():
+        return DetectorProfile()
+    try:
+        payload = json.loads(candidate.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot load detector profile {candidate}: {exc}") from exc
+    if payload.get("status") != "certified":
+        raise RuntimeError(f"detector profile {candidate} is not certified")
+    profile = DetectorProfile.from_dict(payload.get("profile", payload))
+    return profile
 
 
 def _window(seconds: float, cadence_s: float, cap: int = 0) -> int:
@@ -32,110 +124,69 @@ def _window(seconds: float, cadence_s: float, cap: int = 0) -> int:
 
 
 def _rolling_median(values: np.ndarray, window: int) -> np.ndarray:
-    return (
-        pd.Series(values, dtype=float)
-        .rolling(window, min_periods=window)
-        .median()
-        .to_numpy(dtype=float)
-    )
+    return pd.Series(values, dtype=float).rolling(window, min_periods=window).median().to_numpy(dtype=float)
 
 
 def _rolling_quantile(values: np.ndarray, window: int, quantile: float) -> np.ndarray:
-    return (
-        pd.Series(values, dtype=float)
-        .rolling(window, min_periods=window)
-        .quantile(quantile)
-        .to_numpy(dtype=float)
-    )
+    return pd.Series(values, dtype=float).rolling(window, min_periods=window).quantile(quantile).to_numpy(dtype=float)
 
 
-def _hysteresis_mask(
-    evidence_on: np.ndarray,
-    evidence_off: np.ndarray,
-    min_on: int,
-    min_off: int,
-) -> np.ndarray:
-    """Apply online confirmation/release hysteresis without look-ahead."""
+def _hysteresis_mask(evidence_on: np.ndarray, evidence_off: np.ndarray, min_on: int, min_off: int) -> np.ndarray:
     on = np.asarray(evidence_on, dtype=bool)
     off = np.asarray(evidence_off, dtype=bool)
     if on.shape != off.shape:
         raise ValueError("evidence_on and evidence_off must have identical shapes")
-
-    n = len(on)
-    out = np.zeros(n, dtype=bool)
+    out = np.zeros(len(on), dtype=bool)
     state = False
     candidate = 0
-    min_on = max(1, int(min_on))
-    min_off = max(1, int(min_off))
-
-    for i in range(n):
+    for i in range(len(on)):
         if not state:
-            if on[i]:
-                candidate += 1
-                if candidate >= min_on:
-                    state = True
-                    candidate = 0
-            else:
+            candidate = candidate + 1 if on[i] else 0
+            if candidate >= max(1, int(min_on)):
+                state = True
                 candidate = 0
         else:
-            if off[i]:
-                candidate += 1
-                if candidate >= min_off:
-                    state = False
-                    candidate = 0
-            else:
+            candidate = candidate + 1 if off[i] else 0
+            if candidate >= max(1, int(min_off)):
+                state = False
                 candidate = 0
         out[i] = state
     return out
 
 
-def _causal_anomaly_mask(
-    x: np.ndarray, cadence_s: float
-) -> Tuple[np.ndarray, float, np.ndarray]:
-    """Detect abrupt telemetry steps using historical robust statistics only."""
+def _causal_anomaly_mask(x: np.ndarray, cadence_s: float) -> Tuple[np.ndarray, float, np.ndarray]:
     diff = np.diff(x, prepend=np.nan)
     w = _window(3 * 3600, cadence_s, 721)
     d = pd.Series(diff, dtype=float)
     med = d.rolling(w, min_periods=w).median()
     mad = (d - med).abs().rolling(w, min_periods=w).median()
-    threshold = np.maximum(
-        DEFAULT_ANOMALY_DELTA_NT,
-        8.0 * 1.4826 * mad.to_numpy(dtype=float),
-    )
+    threshold = np.maximum(DEFAULT_ANOMALY_DELTA_NT, 8.0 * 1.4826 * mad.to_numpy(dtype=float))
     threshold[~np.isfinite(threshold)] = DEFAULT_ANOMALY_DELTA_NT
     med_values = med.to_numpy(dtype=float)
-    anomaly = (
-        np.isfinite(diff)
-        & np.isfinite(med_values)
-        & (np.abs(diff - med_values) >= threshold)
-    )
+    anomaly = np.isfinite(diff) & np.isfinite(med_values) & (np.abs(diff - med_values) >= threshold)
     finite_threshold = threshold[np.isfinite(threshold)]
-    median_threshold = (
-        float(np.median(finite_threshold))
-        if finite_threshold.size
-        else DEFAULT_ANOMALY_DELTA_NT
-    )
+    median_threshold = float(np.median(finite_threshold)) if finite_threshold.size else DEFAULT_ANOMALY_DELTA_NT
     return anomaly, median_threshold, threshold
 
 
 def detect_activity_masks(
     residual: np.ndarray,
     cadence_s: float = 60.0,
-    active_threshold: float = 15.0,
-    storm_threshold: float = 35.0,
-    unsettled_threshold: float = DEFAULT_UNSETTLED_NT,
-    major_threshold: float = DEFAULT_MAJOR_STORM_NT,
-    severe_threshold: float = DEFAULT_SEVERE_STORM_NT,
+    active_threshold: Optional[float] = None,
+    storm_threshold: Optional[float] = None,
+    unsettled_threshold: Optional[float] = None,
+    major_threshold: Optional[float] = None,
+    severe_threshold: Optional[float] = None,
+    profile: Optional[DetectorProfile] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
-    """Return strictly-causal activity/severity masks and diagnostics.
+    """Return strictly-causal activity/severity masks and diagnostics."""
+    p = profile or load_detector_profile()
+    active_threshold = p.active_nt if active_threshold is None else float(active_threshold)
+    storm_threshold = p.storm_nt if storm_threshold is None else float(storm_threshold)
+    unsettled_threshold = p.unsettled_nt if unsettled_threshold is None else float(unsettled_threshold)
+    major_threshold = p.major_nt if major_threshold is None else float(major_threshold)
+    severe_threshold = p.severe_nt if severe_threshold is None else float(severe_threshold)
 
-    The detector deliberately separates *evidence* from *state*.  Moderate
-    activity may be established from corroborated shorter-timescale evidence,
-    while storm onset requires either sustained storm energy or a genuinely
-    strong excursion with independent medium-timescale support.  Storm release
-    is much slower than onset so one physical disturbance remains one episode
-    through realistic temporary dips.
-    """
     x = np.asarray(residual, dtype=float)
     if x.ndim != 1:
         raise ValueError("residual must be a one-dimensional array")
@@ -149,122 +200,76 @@ def detect_activity_masks(
     magnitude = np.abs(x)
     valid = np.isfinite(magnitude)
     safe = np.where(valid, magnitude, np.nan)
-
     fast = _rolling_median(safe, _window(5 * 60, cadence_s, 31))
     medium = _rolling_median(safe, _window(15 * 60, cadence_s, 61))
     upper_30m = _rolling_quantile(safe, _window(30 * 60, cadence_s, 121), 0.75)
     slow = _rolling_median(safe, _window(60 * 60, cadence_s, 181))
     slow_3h = _rolling_median(safe, _window(3 * 3600, cadence_s, 361))
-
     arrays = (fast, medium, upper_30m, slow, slow_3h)
-    history_ready = (
-        np.isfinite(fast)
-        & np.isfinite(medium)
-        & np.isfinite(upper_30m)
-        & np.isfinite(slow)
-        & np.isfinite(slow_3h)
-        & valid
-    )
+    history_ready = np.isfinite(fast) & np.isfinite(medium) & np.isfinite(upper_30m) & np.isfinite(slow) & np.isfinite(slow_3h) & valid
     for arr in arrays:
         arr[~np.isfinite(arr)] = 0.0
 
-    # Active evidence is deliberately more responsive than storm evidence.
-    # A 15-minute median is still the primary path; shorter/longer evidence
-    # can corroborate a real disturbance without allowing an isolated sample
-    # to become active.  This addresses the observed high precision / low
-    # recall failure of the previous detector.
     active_evidence = history_ready & (
         (medium >= active_threshold)
-        | ((slow >= 0.65 * active_threshold) & (medium >= 0.40 * active_threshold))
-        | ((slow_3h >= 0.55 * active_threshold) & (medium >= 0.40 * active_threshold))
-        | ((upper_30m >= 1.00 * active_threshold) & (medium >= 0.35 * active_threshold))
-        | ((fast >= 1.25 * active_threshold) & (medium >= 0.40 * active_threshold))
+        | ((slow >= p.active_slow_ratio * active_threshold) & (medium >= p.active_medium_slow_ratio * active_threshold))
+        | ((slow_3h >= p.active_slow_3h_ratio * active_threshold) & (medium >= p.active_medium_slow_ratio * active_threshold))
+        | ((upper_30m >= p.active_upper_ratio * active_threshold) & (medium >= p.active_medium_upper_ratio * active_threshold))
+        | ((fast >= p.active_fast_ratio * active_threshold) & (medium >= p.active_medium_slow_ratio * active_threshold))
     )
 
-    # Storm onset has a deliberately high-confidence fast path and a more
-    # conservative 30-minute corroboration path.  The latter is intentionally
-    # stricter than the previous release because the prior version recovered
-    # recall but admitted too many false storm samples.
-    strong_short = (
-        (fast >= 1.80 * storm_threshold)
-        & (medium >= 0.55 * storm_threshold)
-    )
-    strong_30m = (
-        (upper_30m >= 1.10 * storm_threshold)
-        & (medium >= 0.70 * storm_threshold)
-    )
+    strong_short = (fast >= p.storm_fast_ratio * storm_threshold) & (medium >= p.storm_fast_medium_ratio * storm_threshold)
+    strong_30m = (upper_30m >= p.storm_upper_ratio * storm_threshold) & (medium >= p.storm_upper_medium_ratio * storm_threshold)
     sustained = (
         (medium >= storm_threshold)
-        | ((slow >= storm_threshold) & (medium >= 0.80 * storm_threshold))
-        | ((slow_3h >= storm_threshold) & (medium >= 0.80 * storm_threshold))
+        | ((slow >= storm_threshold) & (medium >= p.storm_medium_ratio * storm_threshold))
+        | ((slow_3h >= storm_threshold) & (medium >= p.storm_medium_ratio * storm_threshold))
     )
     storm_evidence = history_ready & (sustained | strong_short | strong_30m)
 
     active = _hysteresis_mask(
         active_evidence,
         history_ready & (medium <= 0.60 * active_threshold),
-        max(1, int(round(5 * 60 / cadence_s))),
-        max(1, int(round(30 * 60 / cadence_s))),
+        _window(p.active_on_minutes * 60, cadence_s),
+        _window(p.active_off_minutes * 60, cadence_s),
     )
-
-    # Ten minutes confirms onset.  Three hours of recovery evidence is
-    # required to end a storm.  This is intentionally longer than the prior
-    # one-hour release: production event evaluation showed that short-lived
-    # dips were fragmenting one physical disturbance into multiple episodes.
     storm = _hysteresis_mask(
         storm_evidence,
-        history_ready & (medium <= 0.65 * storm_threshold),
-        max(1, int(round(10 * 60 / cadence_s))),
-        max(1, int(round(3 * 3600 / cadence_s))),
+        history_ready & (medium <= p.storm_release_ratio * storm_threshold),
+        _window(p.storm_on_minutes * 60, cadence_s),
+        _window(p.storm_off_minutes * 60, cadence_s),
     )
 
     major_evidence = history_ready & (
         (medium >= major_threshold)
-        | ((upper_30m >= 0.90 * major_threshold) & (medium >= 0.80 * major_threshold))
-        | ((fast >= 1.15 * major_threshold) & (medium >= 0.80 * major_threshold))
+        | ((upper_30m >= p.major_upper_ratio * major_threshold) & (medium >= p.major_medium_ratio * major_threshold))
+        | ((fast >= p.major_fast_ratio * major_threshold) & (medium >= p.major_medium_ratio * major_threshold))
     )
     severe_evidence = history_ready & (
         (medium >= severe_threshold)
-        | ((upper_30m >= 0.90 * severe_threshold) & (medium >= 0.80 * severe_threshold))
-        | ((fast >= 1.10 * severe_threshold) & (medium >= 0.80 * severe_threshold))
+        | ((upper_30m >= p.severe_upper_ratio * severe_threshold) & (medium >= p.severe_medium_ratio * severe_threshold))
+        | ((fast >= p.severe_fast_ratio * severe_threshold) & (medium >= p.severe_medium_ratio * severe_threshold))
     )
-
-    major = _hysteresis_mask(
-        major_evidence,
-        history_ready & (medium <= 0.75 * major_threshold),
-        max(1, int(round(10 * 60 / cadence_s))),
-        max(1, int(round(30 * 60 / cadence_s))),
-    ) & storm
-
-    severe = _hysteresis_mask(
-        severe_evidence,
-        history_ready & (medium <= 0.75 * severe_threshold),
-        max(1, int(round(10 * 60 / cadence_s))),
-        max(1, int(round(30 * 60 / cadence_s))),
-    ) & major
+    major = _hysteresis_mask(major_evidence, history_ready & (medium <= 0.75 * major_threshold), _window(10 * 60, cadence_s), _window(30 * 60, cadence_s)) & storm
+    severe = _hysteresis_mask(severe_evidence, history_ready & (medium <= 0.75 * severe_threshold), _window(10 * 60, cadence_s), _window(30 * 60, cadence_s)) & major
 
     active &= valid & history_ready
     storm &= valid & history_ready
     major &= valid & history_ready
     severe &= valid & history_ready
-
     anomaly, anomaly_median_threshold, anomaly_threshold = _causal_anomaly_mask(x, cadence_s)
 
     diagnostics = {
-        "fast_5m_nt": fast,
-        "medium_15m_nt": medium,
-        "upper_30m_p75_nt": upper_30m,
-        "slow_60m_nt": slow,
-        "slow_3h_nt": slow_3h,
-        "storm_evidence": storm_evidence,
+        "fast_5m_nt": fast, "medium_15m_nt": medium, "upper_30m_p75_nt": upper_30m,
+        "slow_60m_nt": slow, "slow_3h_nt": slow_3h, "storm_evidence": storm_evidence,
         "storm_strong_short_evidence": history_ready & strong_short,
         "storm_strong_30m_evidence": history_ready & strong_30m,
-        "storm_sustained_evidence": history_ready & sustained,
-        "history_ready": history_ready,
+        "storm_sustained_evidence": history_ready & sustained, "history_ready": history_ready,
         "unsettled_threshold_nt": np.full(len(x), unsettled_threshold, dtype=float),
         "anomaly_threshold_nt": anomaly_threshold,
         "anomaly_median_threshold_nt": np.full(len(x), anomaly_median_threshold, dtype=float),
         "anomaly": anomaly & valid,
+        "profile": np.asarray([json.dumps(asdict(p), sort_keys=True)] * len(x), dtype=object),
     }
     return active, storm, major, severe, diagnostics
 
@@ -272,33 +277,30 @@ def detect_activity_masks(
 def flag_activity(
     residual: np.ndarray,
     cadence_s: float = 60.0,
-    active_threshold: float = 15.0,
-    storm_threshold: float = 35.0,
-    unsettled_threshold: float = DEFAULT_UNSETTLED_NT,
-    major_threshold: float = DEFAULT_MAJOR_STORM_NT,
-    severe_threshold: float = DEFAULT_SEVERE_STORM_NT,
+    active_threshold: Optional[float] = None,
+    storm_threshold: Optional[float] = None,
+    unsettled_threshold: Optional[float] = None,
+    major_threshold: Optional[float] = None,
+    severe_threshold: Optional[float] = None,
+    profile: Optional[DetectorProfile] = None,
 ) -> np.ndarray:
-    """Classify residuals with causal multi-timescale hysteresis."""
+    """Classify residuals using the certified profile when available."""
     x = np.asarray(residual, dtype=float)
     active, storm, major, severe, diagnostics = detect_activity_masks(
-        x,
-        cadence_s=cadence_s,
-        active_threshold=active_threshold,
-        storm_threshold=storm_threshold,
-        unsettled_threshold=unsettled_threshold,
-        major_threshold=major_threshold,
-        severe_threshold=severe_threshold,
+        x, cadence_s=cadence_s, active_threshold=active_threshold, storm_threshold=storm_threshold,
+        unsettled_threshold=unsettled_threshold, major_threshold=major_threshold,
+        severe_threshold=severe_threshold, profile=profile,
     )
-
     medium = diagnostics["medium_15m_nt"]
     ready = diagnostics["history_ready"]
+    p = profile or load_detector_profile()
+    unsettled = p.unsettled_nt if unsettled_threshold is None else float(unsettled_threshold)
     flags = np.full(len(x), "quiet", dtype=object)
-    flags[ready & (medium >= unsettled_threshold)] = "unsettled"
+    flags[ready & (medium >= unsettled)] = "unsettled"
     flags[active] = "active"
     flags[storm] = "minor_storm"
     flags[major] = "major_storm"
     flags[severe] = "severe_storm"
-
     anomaly = diagnostics["anomaly"]
     flags[anomaly & ready & ~active & ~storm] = "anomaly"
     flags[~np.isfinite(x)] = "quiet"
