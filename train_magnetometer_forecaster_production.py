@@ -18,7 +18,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
-import joblib
 import numpy as np
 import pandas as pd
 import sklearn
@@ -73,19 +72,16 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
-def _atomic_save_model(model: GeomagneticForecaster, path: Path) -> None:
-    """Atomically persist a joblib model artifact."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        joblib.dump(model, temporary)
-        os.replace(temporary, path)
-    except Exception:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-        raise
+def _atomic_save_model(model: GeomagneticForecaster, base_path: Path) -> None:
+    """Atomically publish the model's existing joblib + JSON bundle."""
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{base_path.name}-", dir=base_path.parent) as tmp:
+        temporary_base = Path(tmp) / base_path.name
+        model.save_model(temporary_base)
+        for suffix in (".joblib", ".json"):
+            source = temporary_base.with_suffix(suffix)
+            destination = base_path.with_suffix(suffix)
+            os.replace(source, destination)
 
 
 def _validate_training_frame(frame: pd.DataFrame, observatory: str) -> None:
@@ -247,8 +243,8 @@ def run_one(observatory: str, years: List[int], args: argparse.Namespace) -> Dic
     training = model.fit(frame)
     gate = evaluate_forecast_release(training["final_test"])
 
-    model_path = Path(args.model_root) / observatory / "magnetometer_forecaster.joblib"
-    report_path = model_path.with_suffix(".report.json")
+    model_base = Path(args.model_root) / observatory / "magnetometer_forecaster"
+    report_path = model_base.with_suffix(".report.json")
     model.training_metadata.update({
         "observatory": observatory,
         "training_years": years,
@@ -260,7 +256,6 @@ def run_one(observatory: str, years: List[int], args: argparse.Namespace) -> Dic
         "numpy_version": np.__version__,
         "pandas_version": pd.__version__,
         "scikit_learn_version": sklearn.__version__,
-        "model_library_version": getattr(model, "MODEL_VERSION", None),
     })
 
     report = {
@@ -271,7 +266,7 @@ def run_one(observatory: str, years: List[int], args: argparse.Namespace) -> Dic
         "training": training,
         "release_gate": gate,
         "release_status": "CERTIFIED" if gate["passed"] else "REJECTED",
-        "model_path": str(model_path.resolve()),
+        "model_path": str(model_base.with_suffix(".joblib").resolve()),
         "environment": {
             "python": platform.python_version(),
             "numpy": np.__version__,
@@ -287,9 +282,9 @@ def run_one(observatory: str, years: List[int], args: argparse.Namespace) -> Dic
         _atomic_write_text(report_path, json.dumps(report, indent=2, default=_json_default) + "\n")
         return report
 
-    _atomic_save_model(model, model_path)
+    _atomic_save_model(model, model_base)
     _atomic_write_text(report_path, json.dumps(report, indent=2, default=_json_default) + "\n")
-    logger.info("%s certified model published: %s", observatory, model_path)
+    logger.info("%s certified model published: %s", observatory, model_base.with_suffix(".joblib"))
     return report
 
 
