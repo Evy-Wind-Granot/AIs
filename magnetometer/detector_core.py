@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Deterministic production detector shared by demo and certification paths.
 
-The detector is deliberately non-ML.  It operates on the local QDC residual
+The detector is deliberately non-ML. It operates on the local QDC residual
 and combines robust multi-timescale envelopes with explicit stateful
-hysteresis.  Calibration supplies the active/storm onset thresholds; the final
+hysteresis. Calibration supplies the active/storm onset thresholds; the final
 held-out test is never used to select them.
 """
 from __future__ import annotations
@@ -29,42 +29,24 @@ def _odd_window(seconds: float, cadence_s: float, cap: int = 0) -> int:
 
 
 def _rolling_median(values: np.ndarray, window: int) -> np.ndarray:
-    return (
-        pd.Series(values, dtype=float)
-        .rolling(window, center=True, min_periods=1)
-        .median()
-        .to_numpy(dtype=float)
-    )
+    return pd.Series(values, dtype=float).rolling(window, center=True, min_periods=1).median().to_numpy(dtype=float)
 
 
 def _rolling_quantile(values: np.ndarray, window: int, quantile: float) -> np.ndarray:
-    return (
-        pd.Series(values, dtype=float)
-        .rolling(window, center=True, min_periods=max(1, window // 3))
-        .quantile(quantile)
-        .to_numpy(dtype=float)
-    )
+    return pd.Series(values, dtype=float).rolling(window, center=True, min_periods=max(1, window // 3)).quantile(quantile).to_numpy(dtype=float)
 
 
-def _hysteresis_mask(
-    evidence_on: np.ndarray,
-    evidence_off: np.ndarray,
-    min_on: int,
-    min_off: int,
-) -> np.ndarray:
-    """Convert noisy evidence into a deterministic state machine."""
+def _hysteresis_mask(evidence_on: np.ndarray, evidence_off: np.ndarray, min_on: int, min_off: int) -> np.ndarray:
     on = np.asarray(evidence_on, dtype=bool)
     off = np.asarray(evidence_off, dtype=bool)
     n = len(on)
     out = np.zeros(n, dtype=bool)
     if n == 0:
         return out
-
     min_on = max(1, int(min_on))
     min_off = max(1, int(min_off))
     state = False
     candidate = 0
-
     for i in range(n):
         if not state:
             if on[i]:
@@ -86,6 +68,22 @@ def _hysteresis_mask(
     return out
 
 
+def _bridge_short_false_runs(mask: np.ndarray, max_gap: int) -> np.ndarray:
+    """Bridge only short gaps between true runs; preserve real event boundaries."""
+    out = np.asarray(mask, dtype=bool).copy()
+    if max_gap <= 0 or out.size < 3:
+        return out
+    false_idx = np.flatnonzero(~out)
+    if false_idx.size == 0:
+        return out
+    starts = false_idx[np.r_[True, np.diff(false_idx) > 1]]
+    ends = false_idx[np.r_[np.diff(false_idx) > 1, True]]
+    for s, e in zip(starts, ends):
+        if s > 0 and e < len(out) - 1 and (e - s + 1) <= max_gap:
+            out[s:e + 1] = True
+    return out
+
+
 def detect_activity_masks(
     residual: np.ndarray,
     cadence_s: float = 60.0,
@@ -95,20 +93,7 @@ def detect_activity_masks(
     major_threshold: float = DEFAULT_MAJOR_STORM_NT,
     severe_threshold: float = DEFAULT_SEVERE_STORM_NT,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
-    """Return deterministic activity/storm severity masks and diagnostics.
-
-    Evidence is deliberately multi-timescale:
-
-    * 5-minute median catches onset without allowing isolated spikes through;
-    * 15-minute median is the primary operational signal;
-    * 30-minute 75th percentile catches intermittent but sustained excursions;
-    * 60-minute median captures established disturbances;
-    * 3-hour median captures long, moderate disturbances that never remain
-      above a short-window threshold continuously.
-
-    State transitions use independent release hysteresis.  This keeps a short
-    recovery inside one physical disturbance from creating a new event.
-    """
+    """Return deterministic activity/severity masks and diagnostic envelopes."""
     x = np.asarray(residual, dtype=float)
     magnitude = np.abs(x)
     valid = np.isfinite(magnitude)
@@ -119,11 +104,9 @@ def detect_activity_masks(
     upper_30m = _rolling_quantile(safe, _odd_window(30 * 60, cadence_s, 121), 0.75)
     slow = _rolling_median(safe, _odd_window(60 * 60, cadence_s, 181))
     slow_3h = _rolling_median(safe, _odd_window(3 * 3600, cadence_s, 361))
-
     for arr in (fast, medium, upper_30m, slow, slow_3h):
         arr[~np.isfinite(arr)] = 0.0
 
-    # Activity: sustained moderate excursions or a strong rapid onset.
     active_evidence = (
         (medium >= active_threshold)
         | ((slow >= 0.70 * active_threshold) & (medium >= 0.55 * active_threshold))
@@ -132,32 +115,33 @@ def detect_activity_masks(
         | (fast >= 1.35 * active_threshold)
     )
 
-    # Storm: retain the strong precision of the 15-minute path, while allowing
-    # long-duration moderate disturbances to qualify when multiple independent
-    # timescales agree.  No single fast spike is sufficient on its own.
+    # Storm requires stronger cross-timescale agreement than active. A single
+    # moderate envelope is intentionally insufficient; this protects precision
+    # while retaining the long-duration sensitivity introduced in prior builds.
     storm_evidence = (
         (medium >= storm_threshold)
-        | ((slow >= 0.65 * storm_threshold) & (medium >= 0.65 * storm_threshold))
-        | ((slow_3h >= 0.55 * storm_threshold) & (medium >= 0.60 * storm_threshold))
-        | ((upper_30m >= 0.95 * storm_threshold) & (medium >= 0.55 * storm_threshold))
-        | ((fast >= 1.30 * storm_threshold) & (medium >= 0.55 * storm_threshold))
+        | ((slow >= 0.70 * storm_threshold) & (medium >= 0.70 * storm_threshold))
+        | ((slow_3h >= 0.60 * storm_threshold) & (medium >= 0.65 * storm_threshold))
+        | ((upper_30m >= 1.00 * storm_threshold) & (medium >= 0.60 * storm_threshold))
+        | ((fast >= 1.35 * storm_threshold) & (medium >= 0.60 * storm_threshold))
     )
 
-    active_release = 0.70 * active_threshold
-    storm_release = 0.65 * storm_threshold
-
+    # Confirmation/release hysteresis. The storm mask is then bridged only over
+    # short evidence gaps, preventing one physical disturbance from becoming
+    # multiple storm events while preserving genuinely separated storms.
     active = _hysteresis_mask(
         active_evidence,
-        medium <= active_release,
+        medium <= 0.70 * active_threshold,
         max(1, int(round(5 * 60 / max(cadence_s, 1.0)))),
         max(1, int(round(30 * 60 / max(cadence_s, 1.0)))),
     )
     storm = _hysteresis_mask(
         storm_evidence,
-        medium <= storm_release,
-        max(1, int(round(8 * 60 / max(cadence_s, 1.0)))),
+        medium <= 0.65 * storm_threshold,
+        max(1, int(round(10 * 60 / max(cadence_s, 1.0)))),
         max(1, int(round(45 * 60 / max(cadence_s, 1.0)))),
     )
+    storm = _bridge_short_false_runs(storm, max(1, int(round(15 * 60 / max(cadence_s, 1.0)))))
 
     major_evidence = (
         (medium >= major_threshold)
@@ -169,17 +153,16 @@ def detect_activity_masks(
         | ((upper_30m >= 0.90 * severe_threshold) & (medium >= 0.70 * severe_threshold))
         | (fast >= 1.10 * severe_threshold)
     )
-
     major = _hysteresis_mask(
         major_evidence,
         medium <= 0.75 * major_threshold,
-        max(1, int(round(8 * 60 / max(cadence_s, 1.0)))),
+        max(1, int(round(10 * 60 / max(cadence_s, 1.0)))),
         max(1, int(round(45 * 60 / max(cadence_s, 1.0)))),
     ) & storm
     severe = _hysteresis_mask(
         severe_evidence,
         medium <= 0.75 * severe_threshold,
-        max(1, int(round(8 * 60 / max(cadence_s, 1.0)))),
+        max(1, int(round(10 * 60 / max(cadence_s, 1.0)))),
         max(1, int(round(45 * 60 / max(cadence_s, 1.0)))),
     ) & major
 
@@ -188,8 +171,6 @@ def detect_activity_masks(
     major &= valid
     severe &= valid
 
-    # Robust telemetry-step anomaly.  It remains a separate diagnostic class;
-    # anomalies do not automatically become geomagnetic storms.
     diff = np.diff(x, prepend=x[0])
     finite_diff = diff[np.isfinite(diff)]
     if finite_diff.size:
@@ -224,13 +205,9 @@ def flag_activity(
     """Classify residuals using deterministic multi-timescale hysteresis."""
     x = np.asarray(residual, dtype=float)
     active, storm, major, severe, diagnostics = detect_activity_masks(
-        x,
-        cadence_s=cadence_s,
-        active_threshold=active_threshold,
-        storm_threshold=storm_threshold,
-        unsettled_threshold=unsettled_threshold,
-        major_threshold=major_threshold,
-        severe_threshold=severe_threshold,
+        x, cadence_s=cadence_s, active_threshold=active_threshold,
+        storm_threshold=storm_threshold, unsettled_threshold=unsettled_threshold,
+        major_threshold=major_threshold, severe_threshold=severe_threshold,
     )
     medium = diagnostics["medium_15m_nt"]
     flags = np.full(len(x), "quiet", dtype=object)
@@ -239,7 +216,6 @@ def flag_activity(
     flags[storm] = "minor_storm"
     flags[major] = "major_storm"
     flags[severe] = "severe_storm"
-
     anomaly = diagnostics["anomaly"]
     flags[anomaly & ~active & ~storm] = "anomaly"
     flags[~np.isfinite(x)] = "quiet"
