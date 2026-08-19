@@ -3,14 +3,13 @@
 Magnetometer Pipeline — Production-Ready Edition.
 
 Processes magnetometer time-series using robust harmonic quiet-day curves (QDC),
-residual analysis, 5-tier geomagnetic activity classification, and global index
-cross-validation (Kp and Dst).
+residual analysis, deterministic multi-timescale activity classification, and
+global index cross-validation (Kp and Dst).
 """
 from __future__ import annotations
 
 import argparse
 import logging
-import re
 import sys
 from datetime import datetime, timezone
 from typing import Dict, Any, Tuple, Optional
@@ -21,6 +20,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from scipy import linalg
+
+from detector_core import flag_activity as _production_flag_activity
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,12 +34,10 @@ INTERMAGNET_BASE = "https://imag-data.bgs.ac.uk/GIN_V1/GINServices"
 KP_GFZ_URL = "https://kp.gfz-potsdam.de/app/json/"
 DEFAULT_OBSERVATORY = "VIC"
 DEFAULT_SAMPLES_PER_DAY = "Minute"
-USER_AGENT = "MagnetometerProductionPipeline/1.1"
+USER_AGENT = "MagnetometerProductionPipeline/1.2"
 
-# Production activity policy. These values were selected on calibration data in
-# the production validation suite and are intentionally shared with the
-# performance/release-gate code. The final test set is never used to choose
-# these values automatically.
+# Production policy. Active/storm thresholds are selected by calibration in the
+# validation suite; they are not optimized on final-test data.
 PROD_UNSETTLED_NT = 10.0
 PROD_ACTIVE_NT = 15.0
 PROD_MINOR_STORM_NT = 35.0
@@ -60,7 +59,7 @@ def create_resilient_session(
         status_forcelist=status_forcelist,
         raise_on_status=False,
     )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
+    adapter = HTTPAdapter(max_retries=retries)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
@@ -77,6 +76,8 @@ def fetch_intermagnet_iaga2002(
 ) -> str:
     if start_date is None:
         start_date = "2024-01-01"
+    if duration_days <= 0:
+        raise ValueError("duration_days must be positive")
 
     params = {
         "Request": "GetData",
@@ -94,8 +95,8 @@ def fetch_intermagnet_iaga2002(
 
 
 def parse_iaga2002_to_dataframe(text: str) -> pd.DataFrame:
-    if text.strip().startswith(("<", "<!DOCTYPE", "<html")):
-        raise ValueError("INTERMAGNET returned HTML instead of IAGA-2002 data.")
+    if not text or text.strip().startswith(("<", "<!DOCTYPE", "<html")):
+        raise ValueError("INTERMAGNET returned HTML/empty content instead of IAGA-2002 data.")
 
     lines = text.splitlines()
     data_lines = []
@@ -127,7 +128,10 @@ def parse_iaga2002_to_dataframe(text: str) -> pd.DataFrame:
         parts = line.split()
         if len(parts) < len(col_names):
             continue
-        dt = pd.to_datetime(f"{parts[0]} {parts[1]}", utc=True)
+        try:
+            dt = pd.to_datetime(f"{parts[0]} {parts[1]}", utc=True)
+        except (ValueError, TypeError):
+            continue
 
         def parse_val(idx: Optional[int]) -> float:
             if idx is not None and idx < len(parts):
@@ -146,8 +150,9 @@ def parse_iaga2002_to_dataframe(text: str) -> pd.DataFrame:
             "f_nt": parse_val(idx_f),
         })
 
-    df = pd.DataFrame(rows)
-    return df.set_index("datetime").sort_index()
+    if not rows:
+        raise ValueError("IAGA-2002 response contained no usable data rows.")
+    return pd.DataFrame(rows).set_index("datetime").sort_index()
 
 
 def fetch_kp_gfz(start_date: str, end_date: str) -> pd.Series:
@@ -156,10 +161,12 @@ def fetch_kp_gfz(start_date: str, end_date: str) -> pd.Series:
     resp = HTTP_CLIENT.get(url, timeout=30)
     resp.raise_for_status()
     data = resp.json()
-
-    rows = [{"datetime": pd.to_datetime(ts, utc=True), "kp": float(val)}
-            for ts, val in zip(data["datetime"], data["Kp"])]
-
+    rows = [
+        {"datetime": pd.to_datetime(ts, utc=True), "kp": float(val)}
+        for ts, val in zip(data["datetime"], data["Kp"])
+    ]
+    if not rows:
+        raise ValueError("GFZ returned no Kp records")
     return pd.DataFrame(rows).set_index("datetime")["kp"].sort_index()
 
 
@@ -202,27 +209,27 @@ def fetch_dst_kyoto(year: int, month: int) -> Optional[pd.Series]:
 
     if not rows:
         return None
-
     return pd.DataFrame(rows).set_index("datetime")["dst"].sort_index()
 
 
 def handle_gaps(series: pd.Series, max_gap_samples: int = 3) -> pd.Series:
     if series.empty:
         return series
+    series = pd.to_numeric(series, errors="coerce")
     deltas = series.index.to_series().diff().dropna()
+    if deltas.empty:
+        return series
     freq_s = max(1, int(deltas.median().total_seconds()))
     freq = pd.Timedelta(seconds=freq_s)
-
     regular_index = pd.date_range(start=series.index.min(), end=series.index.max(), freq=freq, tz="UTC")
     series = series.reindex(regular_index)
-    return series.interpolate(method="linear", limit=max_gap_samples)
+    return series.interpolate(method="linear", limit=max_gap_samples, limit_direction="both")
 
 
 def build_design_matrix(t_hours: np.ndarray, t_ref_min: float, t_ref_max: float) -> np.ndarray:
     t = np.asarray(t_hours, dtype=float)
     t_norm = (t - t_ref_min) / (t_ref_max - t_ref_min + 1e-12)
     t_norm_clamped = np.clip(t_norm, -0.5, 1.5)
-
     cols = [
         np.ones_like(t),
         t_norm_clamped,
@@ -246,29 +253,32 @@ def robust_harmonic_baseline(
 ) -> Tuple[np.ndarray, np.ndarray]:
     x = np.asarray(x, dtype=float)
     n = len(x)
+    if n == 0:
+        return np.empty(0, dtype=float), np.empty(0, dtype=float)
     if t_hours is None:
         t_hours = np.arange(n) * cadence_s / 3600.0
 
     ref_min = t_hours.min() if t_ref_min is None else t_ref_min
     ref_max = t_hours.max() if t_ref_max is None else t_ref_max
-
     A = build_design_matrix(t_hours, ref_min, ref_max)
     valid = np.isfinite(x)
     w = np.ones(n)
     w[~valid] = 0.0
-
     coeffs = np.zeros(A.shape[1])
-    for _ in range(n_iter):
+
+    for _ in range(max(1, n_iter)):
         if valid.sum() < A.shape[1]:
             break
         Aw = A * w[:, np.newaxis]
-        xw = x * w
+        xw = np.nan_to_num(x, nan=0.0) * w
         coeffs, *_ = linalg.lstsq(Aw[valid], xw[valid])[:2]
         pred = A @ coeffs
         resid = x - pred
-        mad = np.median(np.abs(resid[valid] - np.median(resid[valid])))
+        finite_resid = resid[valid]
+        if finite_resid.size == 0:
+            break
+        mad = np.median(np.abs(finite_resid - np.median(finite_resid)))
         sigma = 1.4826 * mad + 1e-12
-
         w = np.ones(n)
         w[~valid] = 0.0
         w[np.abs(resid) > outlier_threshold_nt] = 0.1
@@ -277,86 +287,38 @@ def robust_harmonic_baseline(
     return A @ coeffs, coeffs
 
 
-def _persistent_mask(mask: np.ndarray, min_samples: int, release_samples: int = 0) -> np.ndarray:
-    """Require persistence before opening a detection; optionally add hysteresis on release."""
-    mask = np.asarray(mask, dtype=bool)
-    if mask.size == 0 or min_samples <= 1:
-        return mask.copy()
-
-    starts = np.flatnonzero(np.r_[False, mask[1:] & ~mask[:-1]])
-    ends = np.flatnonzero(np.r_[mask[:-1] & ~mask[1:], False]) + 1
-    out = np.zeros_like(mask)
-    for start, end in zip(starts, ends):
-        run = end - start
-        if run >= min_samples:
-            out[start:end] = True
-
-    if release_samples > 0:
-        padded = np.r_[False, out, False]
-        starts = np.flatnonzero(~padded[:-1] & padded[1:])
-        ends = np.flatnonzero(padded[:-1] & ~padded[1:])
-        for start, end in zip(starts, ends):
-            extra_end = min(len(out), end + release_samples)
-            out[start:extra_end] = True
-
-    return out
-
-
-def flag_activity(residual: np.ndarray, cadence_s: float = 60.0) -> np.ndarray:
-    """Production activity classifier with calibration-selected thresholds and persistence."""
-    residual = np.asarray(residual, dtype=float)
-    magnitude = np.abs(residual)
-
-    # Short median filter suppresses isolated spikes without erasing sustained
-    # geomagnetic excursions. Windows are capped for very coarse cadence.
-    smooth_samples = max(1, int(round(15 * 60 / max(cadence_s, 1.0))))
-    smooth_samples = min(smooth_samples, 31)
-    if smooth_samples % 2 == 0:
-        smooth_samples += 1
-    smooth = pd.Series(magnitude).rolling(smooth_samples, center=True, min_periods=1).median().to_numpy()
-
-    active_raw = smooth > PROD_ACTIVE_NT
-    storm_raw = smooth > PROD_MINOR_STORM_NT
-
-    # Persistence is intentionally modest: 10 minutes for activation and
-    # 15 minutes for storm classification. This prevents single-point noise
-    # while still catching rapidly developing disturbances.
-    active_min = max(1, int(round(10 * 60 / max(cadence_s, 1.0))))
-    storm_min = max(1, int(round(15 * 60 / max(cadence_s, 1.0))))
-    active = _persistent_mask(active_raw, active_min)
-    storm = _persistent_mask(storm_raw, storm_min)
-
-    flags = np.full(len(residual), "quiet", dtype=object)
-    flags[smooth > PROD_UNSETTLED_NT] = "unsettled"
-    flags[active] = "active"
-    flags[storm] = "minor_storm"
-    flags[smooth > PROD_MAJOR_STORM_NT] = "major_storm"
-    flags[smooth > PROD_SEVERE_STORM_NT] = "severe_storm"
-
-    diff = np.diff(residual, prepend=residual[0])
-    anomaly = np.abs(diff) > ANOMALY_DELTA_NT
-    flags[anomaly & ~active & ~storm] = "anomaly"
-    return flags
+def flag_activity(
+    residual: np.ndarray,
+    cadence_s: float = 60.0,
+    active_threshold: float = PROD_ACTIVE_NT,
+    storm_threshold: float = PROD_MINOR_STORM_NT,
+) -> np.ndarray:
+    """Production detector facade shared with certification logic."""
+    return _production_flag_activity(
+        residual,
+        cadence_s=cadence_s,
+        active_threshold=active_threshold,
+        storm_threshold=storm_threshold,
+        unsettled_threshold=PROD_UNSETTLED_NT,
+        major_threshold=PROD_MAJOR_STORM_NT,
+        severe_threshold=PROD_SEVERE_STORM_NT,
+    )
 
 
 def cross_validate_flags(local_flags: np.ndarray, dst_vals: np.ndarray, kp_vals: np.ndarray) -> np.ndarray:
     validation = np.full(len(local_flags), "ok", dtype=object)
-
     for i in range(len(local_flags)):
         local = local_flags[i]
         dst = dst_vals[i] if np.isfinite(dst_vals[i]) else None
         kp = kp_vals[i] if np.isfinite(kp_vals[i]) else None
-
         global_main_phase = (dst is not None and dst < -50) or (kp is not None and kp >= 6)
         global_active = (dst is not None and dst < -30) or (kp is not None and kp >= 4)
-
         if local == "quiet" and global_main_phase:
             validation[i] = "missed_global_event"
         elif local in ("quiet", "unsettled") and global_active:
             validation[i] = "under_reacting"
         elif local in ("major_storm", "severe_storm") and not global_active:
             validation[i] = "unconfirmed_storm"
-
     return validation
 
 
@@ -374,45 +336,36 @@ def run_analysis(
 
     baseline = np.zeros(n, dtype=float)
     weights = np.zeros(n, dtype=float)
-
-    window_samples = int(24 * 3600 / cadence_s)
+    window_samples = max(1, int(24 * 3600 / max(cadence_s, 1.0)))
     step_samples = max(1, window_samples // 2)
     t_global = np.arange(n) * cadence_s / 3600.0
-    t_min, t_max = t_global.min(), t_global.max()
+    t_min, t_max = (t_global.min(), t_global.max()) if n else (0.0, 0.0)
     last_good_coeffs = None
 
-    for start in range(0, max(1, n - step_samples), step_samples):
+    for start in range(0, max(1, n - step_samples + 1), step_samples):
         end = min(start + window_samples, n)
-        if end - start < step_samples // 2:
-            break
-
+        if end - start < max(1, step_samples // 2):
+            continue
         segment = x[start:end]
         t_seg = t_global[start:end]
         if np.isfinite(segment).sum() < (end - start) * 0.5:
             continue
-
-        seg_base, coeffs = robust_harmonic_baseline(
-            segment, cadence_s, t_hours=t_seg, t_ref_min=t_min, t_ref_max=t_max
-        )
+        seg_base, coeffs = robust_harmonic_baseline(segment, cadence_s, t_hours=t_seg, t_ref_min=t_min, t_ref_max=t_max)
         seg_res = segment - seg_base
-        storm_frac = np.mean(np.abs(seg_res) > 50.0)
-
+        storm_frac = float(np.mean(np.abs(seg_res[np.isfinite(seg_res)]) > 50.0)) if np.isfinite(seg_res).any() else 0.0
         if storm_frac > 0.05 and last_good_coeffs is not None:
-            A_seg = build_design_matrix(t_seg, t_min, t_max)
-            seg_base = A_seg @ last_good_coeffs
+            seg_base = build_design_matrix(t_seg, t_min, t_max) @ last_good_coeffs
             logger.info(f"Storm window detected [{start}:{end}]. Extrapolating quiet baseline.")
         elif storm_frac <= 0.05:
             last_good_coeffs = coeffs
-
         w_win = np.hanning(end - start)
         baseline[start:end] += seg_base * w_win
         weights[start:end] += w_win
 
     weights_mask = weights > 0
-    fallback = np.nanmedian(x)
+    fallback = float(np.nanmedian(x)) if np.isfinite(x).any() else 0.0
     baseline[weights_mask] /= weights[weights_mask]
     baseline[~weights_mask] = fallback
-
     residual = x - baseline
     flags = flag_activity(residual, cadence_s=cadence_s)
 
@@ -430,10 +383,12 @@ def run_analysis(
         logger.info(f"  {u:12s}: {c}")
 
     quiet_mask = flags == "quiet"
-    if np.any(quiet_mask):
-        logger.info(f"Quiet Period Residual RMS: {np.std(residual[quiet_mask]):.2f} nT")
-    logger.info(f"Overall Residual RMS: {np.std(residual):.2f} nT")
-    logger.info(f"Residual Range: {np.min(residual):.2f} nT to {np.max(residual):.2f} nT")
+    finite_residual = residual[np.isfinite(residual)]
+    if np.any(quiet_mask & np.isfinite(residual)):
+        logger.info(f"Quiet Period Residual RMS: {np.std(residual[quiet_mask & np.isfinite(residual)]):.2f} nT")
+    if finite_residual.size:
+        logger.info(f"Overall Residual RMS: {np.std(finite_residual):.2f} nT")
+        logger.info(f"Residual Range: {np.min(finite_residual):.2f} nT to {np.max(finite_residual):.2f} nT")
 
     return {"baseline": baseline, "residual": residual, "flags": flags, "validation": validation}
 
@@ -449,18 +404,18 @@ def main():
     ap.add_argument("--cross-check-indices", action="store_true")
     args = ap.parse_args()
 
-    if args.fetch_real_data:
-        iaga_text = fetch_intermagnet_iaga2002(
-            observatory=args.observatory,
-            start_date=args.start_date,
-            duration_days=args.days,
-        )
-        df = parse_iaga2002_to_dataframe(iaga_text)
-        label = f"INTERMAGNET {args.observatory}"
-    else:
+    if not args.fetch_real_data:
         logger.error("Must supply --fetch-real-data")
         sys.exit(1)
 
+    iaga_text = fetch_intermagnet_iaga2002(
+        observatory=args.observatory,
+        start_date=args.start_date,
+        duration_days=args.days,
+    )
+    df = parse_iaga2002_to_dataframe(iaga_text)
+    if args.column not in df.columns:
+        raise SystemExit(f"Unknown data column: {args.column}; available={list(df.columns)}")
     x = handle_gaps(df[args.column], max_gap_samples=3).values
 
     dst_series, kp_series = None, None
@@ -483,7 +438,7 @@ def main():
     run_analysis(
         x,
         args.cadence_s,
-        label=label,
+        label=f"INTERMAGNET {args.observatory}",
         start_time=pd.to_datetime(df.index.min()).to_pydatetime(),
         dst_series=dst_series,
         kp_series=kp_series,
