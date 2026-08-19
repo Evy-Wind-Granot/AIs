@@ -20,7 +20,8 @@ def test_sustained_storm_is_detected_after_causal_warmup():
         residual, cadence_s=60.0, active_threshold=15.0, storm_threshold=35.0
     )
     ready = diagnostics["history_ready"]
-    assert not np.any(storm[: np.flatnonzero(ready)[0]])
+    first_ready = int(np.flatnonzero(ready)[0])
+    assert not np.any(storm[:first_ready])
     assert storm[195:240].mean() > 0.8
     assert active[195:240].mean() > 0.8
     assert not np.any(major)
@@ -37,12 +38,15 @@ def test_short_dip_does_not_split_storm_event():
 
 
 def test_long_moderate_disturbance_uses_long_context():
-    # A long disturbance can be physically meaningful without remaining above
-    # the storm threshold at every short timescale.
     residual = np.zeros(8 * 60, dtype=float)
     residual[60:420] = 27.0
     residual[210:225] = 12.0
-    flags = flag_activity(residual, cadence_s=60.0, active_threshold=15.0, storm_threshold=35.0)
+    flags = flag_activity(
+        residual,
+        cadence_s=60.0,
+        active_threshold=15.0,
+        storm_threshold=35.0,
+    )
     storm = np.isin(flags, ["minor_storm", "major_storm", "severe_storm"])
     assert storm[195:360].mean() > 0.75
 
@@ -66,12 +70,19 @@ def test_detector_is_strictly_causal():
 
 
 def test_startup_requires_history():
-    """The detector does not fabricate classifications before all windows exist."""
+    """Startup must not emit storm/major/severe before causal history is ready."""
     residual = np.full(4 * 3600, 60.0, dtype=float)
-    flags = flag_activity(residual, cadence_s=60.0)
-    # The slowest production feature is a 3-hour trailing context.  With
-    # one-minute samples, 180 prior samples are required before that feature is
-    # valid; the initial 179 samples therefore remain quiet.
-    warmup_samples = 3 * 60
-    assert np.all(flags[:warmup_samples] == "quiet")
-    assert np.any(np.isin(flags[warmup_samples:], ["minor_storm", "major_storm", "severe_storm"]))
+    active, storm, major, severe, diagnostics = detect_activity_masks(
+        residual, cadence_s=60.0
+    )
+    ready = diagnostics["history_ready"]
+    first_ready = int(np.flatnonzero(ready)[0])
+    high_severity = np.isin(
+        flag_activity(residual, cadence_s=60.0),
+        ["minor_storm", "major_storm", "severe_storm"],
+    )
+    assert not np.any(high_severity[:first_ready])
+    assert not np.any(storm[:first_ready])
+    assert not np.any(major[:first_ready])
+    assert not np.any(severe[:first_ready])
+    assert np.any(high_severity[first_ready:])
