@@ -8,7 +8,7 @@ from typing import Any, Dict
 import numpy as np
 import pandas as pd
 
-from models.forecaster import ForecastResult, GeomagneticForecaster
+from magnetometer.forecasting.models.forecaster import ForecastResult, GeomagneticForecaster
 
 
 def build_aligned_forecast_frame(
@@ -73,10 +73,7 @@ def hybrid_status_payload(
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "realtime": {
-            "tier": deterministic_tier,
-            "residual_nt": result.current_residual_nt,
-        },
+        "realtime": {"tier": deterministic_tier, "residual_nt": result.current_residual_nt},
         "forecast": result.horizons,
         "hybrid": {
             "forecast_highest_tier": highest,
