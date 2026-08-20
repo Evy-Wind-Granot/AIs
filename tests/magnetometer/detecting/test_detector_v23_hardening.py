@@ -35,3 +35,21 @@ def test_single_short_spike_does_not_create_active_event():
     active, storm, *_ = detect_activity_masks(x, cadence_s=60.0, profile=profile, include_anomaly=False)
     assert not active[500]
     assert not storm[500]
+
+
+def test_active_state_releases_when_coherent_evidence_disappears():
+    x = np.zeros(1000, dtype=float)
+    x[400:650] = 40.0
+    profile = DetectorProfile(active_nt=20.0, storm_nt=80.0, active_on_minutes=2.0, active_off_minutes=10.0)
+    active, *_ = detect_activity_masks(x, cadence_s=60.0, profile=profile, include_anomaly=False)
+    assert active[450]
+    assert not active[900]
+
+
+def test_storm_state_releases_when_coherent_evidence_disappears():
+    x = np.zeros(1200, dtype=float)
+    x[400:800] = 100.0
+    profile = DetectorProfile(active_nt=20.0, storm_nt=70.0, active_on_minutes=2.0, active_off_minutes=10.0, storm_on_minutes=2.0, storm_off_minutes=20.0)
+    _, storm, *_ = detect_activity_masks(x, cadence_s=60.0, profile=profile, include_anomaly=False)
+    assert storm[500]
+    assert not storm[1100]
