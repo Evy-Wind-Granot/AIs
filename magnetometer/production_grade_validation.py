@@ -1,38 +1,37 @@
 #!/usr/bin/env python3
-"""Production-grade, held-out validation gate for the magnetometer pipeline.
+"""Production validation data preparation used by detector calibration.
 
-Historical cases are cached on disk after their raw/reference preparation so
-calibration and validation runs do not repeatedly redownload identical windows.
-Independent cases may be prepared concurrently with a bounded worker pool.
+This module is the stable compatibility boundary for historical-case loading.
+The detector calibrator depends on it for case discovery, caching and reference
+alignment.  Residual generation is explicitly pinned to the causal baseline.
 """
 from __future__ import annotations
 
-import argparse
-import json
 import math
-import sys
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 
-HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
-
-import performance_metrics as pm  # noqa: E402
-from magnetometer_demo import (  # noqa: E402
+from . import causal_baseline
+from . import performance_metrics as pm
+from .magnetometer_demo import (
     fetch_dst_kyoto,
     fetch_intermagnet_iaga2002,
     fetch_kp_gfz,
     parse_iaga2002_to_dataframe,
 )
 
+pm.compute_qdc_baseline = causal_baseline.compute_causal_qdc_baseline
+
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parent
+DEFAULT_CACHE_DIR = HERE / "data" / "case_cache_causal_v8"
+
+_KP_CACHE: Dict[Tuple[str, str], pd.Series] = {}
+_DST_CACHE: Dict[Tuple[int, int], Optional[pd.Series]] = {}
 
 @dataclass(frozen=True)
 class Case:
@@ -45,100 +44,40 @@ class Case:
     split: str
 
 
-ACTIVE_CANDIDATES = (15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0)
-STORM_CANDIDATES = (35.0, 50.0, 60.0, 70.0, 80.0, 100.0, 120.0, 150.0)
-DEFAULT_YEARS = (2022, 2023, 2024, 2025)
-DEFAULT_CASES_PER_CLASS_PER_YEAR = 2
-DEFAULT_WINDOW_DAYS = 7
-DEFAULT_MIN_REFERENCE_COVERAGE = 0.95
-DEFAULT_MIN_COMPLETENESS = 0.99
-DEFAULT_MIN_STORM_PRECISION = 0.70
-DEFAULT_MIN_STORM_RECALL = 0.60
-DEFAULT_MIN_STORM_F1 = 0.60
-DEFAULT_MIN_STORM_FALSE_ALARM_RATE = 0.05
-DEFAULT_BOOTSTRAPS = 2000
-DEFAULT_WORKERS = 4
-DEFAULT_CACHE_DIR = REPO_ROOT / "magnetometer" / "data" / "case_cache"
-
-_KP_CACHE: Dict[Tuple[str, str], pd.Series] = {}
-_DST_CACHE: Dict[Tuple[int, int], Optional[pd.Series]] = {}
+def _fetch_kp_cached(start: str, end: str) -> pd.Series:
+    key = (start, end)
+    if key not in _KP_CACHE:
+        _KP_CACHE[key] = fetch_kp_gfz(start, end)
+    return _KP_CACHE[key]
 
 
-def safe_float(value: Any) -> float | None:
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
-
-
-def finite(values: np.ndarray) -> np.ndarray:
-    values = np.asarray(values, dtype=float)
-    return values[np.isfinite(values)]
-
-
-def aggregate_binary(metric_rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    return pm.aggregate_binary_metrics(metric_rows)
-
-
-def metrics_from_counts(tp: int, tn: int, fp: int, fn: int) -> Dict[str, Any]:
-    total = tp + tn + fp + fn
-
-    def div(a: float, b: float) -> float | None:
-        return float(a / b) if b else None
-
-    precision = div(tp, tp + fp)
-    recall = div(tp, tp + fn)
-    specificity = div(tn, tn + fp)
-    f1 = div(2 * precision * recall, precision + recall) if precision is not None and recall is not None else None
-    return {
-        "samples": total,
-        "tp": tp,
-        "tn": tn,
-        "fp": fp,
-        "fn": fn,
-        "precision": precision,
-        "recall": recall,
-        "specificity": specificity,
-        "f1": f1,
-        "false_alarm_rate": div(fp, fp + tn),
-        "miss_rate": div(fn, fn + tp),
-    }
-
-
-def bootstrap_metric_ci(case_metrics: Sequence[Dict[str, Any]], metric: str, seed: int, iterations: int) -> Dict[str, float | None]:
-    if not case_metrics or iterations <= 0:
-        return {"lower": None, "median": None, "upper": None}
-    rng = np.random.default_rng(seed)
-    n = len(case_metrics)
-    values: List[float] = []
-    for _ in range(iterations):
-        sample = rng.integers(0, n, size=n)
-        tp = tn = fp = fn = 0
-        for idx in sample:
-            row = case_metrics[int(idx)]
-            tp += int(row.get("tp", 0)); tn += int(row.get("tn", 0)); fp += int(row.get("fp", 0)); fn += int(row.get("fn", 0))
-        result = metrics_from_counts(tp, tn, fp, fn).get(metric)
-        if result is not None and math.isfinite(float(result)):
-            values.append(float(result))
-    if not values:
-        return {"lower": None, "median": None, "upper": None}
-    arr = np.asarray(values)
-    return {"lower": float(np.percentile(arr, 2.5)), "median": float(np.percentile(arr, 50)), "upper": float(np.percentile(arr, 97.5))}
+def _fetch_dst_cached(year: int, month: int) -> Optional[pd.Series]:
+    key = (int(year), int(month))
+    if key not in _DST_CACHE:
+        _DST_CACHE[key] = fetch_dst_kyoto(int(year), int(month))
+    return _DST_CACHE[key]
 
 
 def split_years(years: Sequence[int]) -> Dict[str, List[int]]:
-    years = sorted(set(int(y) for y in years))
-    if len(years) < 3:
-        raise ValueError("At least 3 distinct years are required for calibration/validation/final-test splits.")
-    n = len(years); cal_n = max(1, n // 2); val_n = max(1, (n - cal_n) // 2)
+    values = sorted(set(int(y) for y in years))
+    if len(values) < 3:
+        raise ValueError("At least 3 distinct years are required.")
+    n = len(values)
+    cal_n = max(1, n // 2)
+    val_n = max(1, (n - cal_n) // 2)
     if cal_n + val_n >= n:
-        val_n = 1; cal_n = n - 2
-    return {"calibration": years[:cal_n], "validation": years[cal_n : cal_n + val_n], "test": years[cal_n + val_n :]}
+        val_n = 1
+        cal_n = n - 2
+    return {
+        "calibration": values[:cal_n],
+        "validation": values[cal_n:cal_n + val_n],
+        "test": values[cal_n + val_n:],
+    }
 
 
-def discover_cases_for_year(kp: pd.Series, year: int, class_name: str, per_year: int, window_days: int, split: str) -> List[Case]:
-    year_kp = kp[(kp.index.year == year)]
+def discover_cases_for_year(kp: pd.Series, year: int, class_name: str,
+                            per_year: int, window_days: int, split: str) -> List[Case]:
+    year_kp = kp[kp.index.year == int(year)]
     if year_kp.empty:
         return []
     daily = year_kp.resample("1D").max().dropna()
@@ -149,44 +88,48 @@ def discover_cases_for_year(kp: pd.Series, year: int, class_name: str, per_year:
     else:
         candidates = daily[daily >= 6.0].sort_values(ascending=False)
     selected: List[Case] = []
-    min_separation = pd.Timedelta(days=max(window_days + 3, 14))
-    for center_date, _ in candidates.items():
-        if any(abs(center_date - pd.Timestamp(c.center_date, tz="UTC")) < min_separation for c in selected):
+    separation = pd.Timedelta(days=max(window_days + 3, 14))
+    for center, _ in candidates.items():
+        if any(abs(center - pd.Timestamp(c.center_date, tz="UTC")) < separation for c in selected):
             continue
-        start = (center_date - pd.Timedelta(days=window_days // 2)).normalize()
+        start = (center - pd.Timedelta(days=window_days // 2)).normalize()
         selected.append(Case(
-            case_id=f"{split}_{class_name}_{center_date.strftime('%Y%m%d')}",
-            center_date=center_date.strftime("%Y-%m-%d"), start_date=start.strftime("%Y-%m-%d"),
-            days=window_days, class_name=class_name, year=year, split=split,
+            case_id=f"{split}_{class_name}_{center.strftime('%Y%m%d')}",
+            center_date=center.strftime("%Y-%m-%d"),
+            start_date=start.strftime("%Y-%m-%d"),
+            days=window_days,
+            class_name=class_name,
+            year=int(year),
+            split=split,
         ))
         if len(selected) >= per_year:
             break
     return selected
 
 
-def discover_suite(years: Sequence[int], cases_per_class_per_year: int, window_days: int) -> Tuple[Dict[str, List[int]], List[Case]]:
+def discover_suite(years: Sequence[int], cases_per_class_per_year: int,
+                    window_days: int) -> Tuple[Dict[str, List[int]], List[Case]]:
     splits = split_years(years)
-    start = f"{min(years):04d}-01-01"; end = f"{max(years):04d}-12-31"
-    print(f"Fetching Kp once for {start} -> {end}...", flush=True)
-    kp = _fetch_kp_cached(start, end)
+    kp = _fetch_kp_cached(f"{min(years):04d}-01-01", f"{max(years):04d}-12-31")
     if kp.empty:
         raise RuntimeError("Kp discovery returned no data.")
     cases: List[Case] = []
     for split, split_years_list in splits.items():
         for year in split_years_list:
             for class_name in ("quiet", "active", "storm"):
-                cases.extend(discover_cases_for_year(kp, year, class_name, cases_per_class_per_year, window_days, split))
+                cases.extend(discover_cases_for_year(
+                    kp, year, class_name, cases_per_class_per_year, window_days, split
+                ))
     return splits, sorted(cases, key=lambda c: (c.split, c.year, c.class_name, c.center_date))
 
 
 def _cache_path(cache_dir: Path, observatory: str, case: Case) -> Path:
-    safe_case = case.case_id.replace("/", "_")
-    return cache_dir / f"{observatory.upper()}_{safe_case}_{case.days}d.npz"
+    return Path(cache_dir) / f"{observatory.upper()}_{case.case_id}_{case.days}d.npz"
 
 
 def _save_case_cache(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{time.time_ns()}.{id(data)}.tmp")
+    tmp = path.with_name(f".{path.name}.{id(data)}.tmp")
     payload = {
         "residual": np.asarray(data["residual"], dtype=float),
         "known": np.asarray(data["refs"]["known"], dtype=bool),
@@ -194,22 +137,19 @@ def _save_case_cache(path: Path, data: Dict[str, Any]) -> None:
         "storm": np.asarray(data["refs"]["storm"], dtype=bool),
         "kp_known": np.asarray(data["refs"]["kp_known"], dtype=bool),
         "dst_known": np.asarray(data["refs"]["dst_known"], dtype=bool),
-        "cadence_s": np.asarray([data["cadence_s"]], dtype=float),
-        "completeness": np.asarray([data["completeness"]], dtype=float),
-        "kp_coverage": np.asarray([data["kp_coverage"]], dtype=float),
-        "dst_coverage": np.asarray([data["dst_coverage"]], dtype=float),
-        "reference_coverage": np.asarray([data["reference_coverage"]], dtype=float),
-        "series": np.asarray(data["series"].to_numpy(dtype=float), dtype=float),
+        "cadence_s": np.asarray([data["cadence_s"]]),
+        "completeness": np.asarray([data["completeness"]]),
+        "kp_coverage": np.asarray([data["kp_coverage"]]),
+        "dst_coverage": np.asarray([data["dst_coverage"]]),
+        "reference_coverage": np.asarray([data["reference_coverage"]]),
+        "series": np.asarray(data["series"].to_numpy(dtype=float)),
     }
     try:
         with open(tmp, "wb") as fh:
             np.savez_compressed(fh, **payload)
         tmp.replace(path)
     finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+        tmp.unlink(missing_ok=True)
 
 
 def _load_case_cache(path: Path, observatory: str, case: Case) -> Optional[Dict[str, Any]]:
@@ -224,79 +164,76 @@ def _load_case_cache(path: Path, observatory: str, case: Case) -> Optional[Dict[
             if not (residual.size == known.size == active.size == storm.size):
                 return None
             refs = {
-                "known": known, "active": active, "storm": storm,
+                "known": known,
+                "active": active,
+                "storm": storm,
                 "kp_known": np.asarray(z["kp_known"], dtype=bool),
                 "dst_known": np.asarray(z["dst_known"], dtype=bool),
             }
             return {
-                "observatory": observatory, "case": asdict(case), "series": pd.Series(np.asarray(z["series"], dtype=float)),
-                "residual": residual, "cadence_s": float(z["cadence_s"][0]),
-                "completeness": float(z["completeness"][0]), "refs": refs,
-                "kp_coverage": float(z["kp_coverage"][0]), "dst_coverage": float(z["dst_coverage"][0]),
-                "reference_coverage": float(z["reference_coverage"][0]), "kp_error": None,
-                "dst_months_requested": None, "dst_months_available": None, "cache_hit": True,
+                "observatory": observatory,
+                "case": asdict(case),
+                "series": pd.Series(np.asarray(z["series"], dtype=float)),
+                "residual": residual,
+                "cadence_s": float(z["cadence_s"][0]),
+                "completeness": float(z["completeness"][0]),
+                "refs": refs,
+                "kp_coverage": float(z["kp_coverage"][0]),
+                "dst_coverage": float(z["dst_coverage"][0]),
+                "reference_coverage": float(z["reference_coverage"][0]),
+                "kp_error": None,
+                "cache_hit": True,
             }
     except (OSError, ValueError, KeyError, EOFError):
         return None
 
 
-def _fetch_kp_cached(start: str, end: str) -> pd.Series:
-    key = (start, end)
-    cached = _KP_CACHE.get(key)
-    if cached is None:
-        cached = fetch_kp_gfz(start, end)
-        _KP_CACHE[key] = cached
-    return cached
-
-
-def _fetch_dst_cached(year: int, month: int) -> Optional[pd.Series]:
-    key = (int(year), int(month))
-    if key not in _DST_CACHE:
-        _DST_CACHE[key] = fetch_dst_kyoto(int(year), int(month))
-    return _DST_CACHE[key]
-
-
 def load_case(observatory: str, case: Case, cache_dir: Path | None = None) -> Dict[str, Any]:
     cache_dir = Path(cache_dir or DEFAULT_CACHE_DIR)
-    cache_dir.mkdir(parents=True, exist_ok=True)
     path = _cache_path(cache_dir, observatory, case)
     cached = _load_case_cache(path, observatory, case)
     if cached is not None:
         return cached
 
-    raw = fetch_intermagnet_iaga2002(observatory=observatory, start_date=case.start_date, duration_days=case.days, samples_per_day="Minute")
+    raw = fetch_intermagnet_iaga2002(
+        observatory=observatory,
+        start_date=case.start_date,
+        duration_days=case.days,
+        samples_per_day="Minute",
+    )
     df = parse_iaga2002_to_dataframe(raw)
     if df.empty or "f_nt" not in df.columns:
         raise RuntimeError("No usable total-field data returned.")
     series = pd.to_numeric(df["f_nt"], errors="coerce")
     valid_count = int(series.notna().sum())
-    expected = max(1, int(case.days * 24 * 60)); completeness = valid_count / expected
+    expected = max(1, int(case.days * 24 * 60))
+    completeness = valid_count / expected
     if valid_count < max(24, int(expected * 0.50)):
         raise RuntimeError(f"Too few valid samples: {valid_count}/{expected} ({completeness:.1%}).")
+
     index = series.index
     cadence = index.to_series().diff().dropna().dt.total_seconds()
     cadence_s = float(cadence.median()) if not cadence.empty else 60.0
     if not math.isfinite(cadence_s) or cadence_s <= 0:
         raise RuntimeError("Invalid cadence in magnetometer data.")
-    _, residual = pm.compute_qdc_baseline(series.to_numpy(dtype=float), cadence_s)
 
-    kp_error = None
+    _, residual = causal_baseline.compute_causal_qdc_baseline(
+        series.to_numpy(dtype=float), cadence_s
+    )
+
     try:
         kp = _fetch_kp_cached(index[0].strftime("%Y-%m-%d"), index[-1].strftime("%Y-%m-%d"))
-    except Exception as exc:
-        kp = pd.Series(dtype=float); kp_error = str(exc)
+    except Exception:
+        kp = pd.Series(dtype=float)
 
     dst_parts = []
-    dst_months = 0; dst_ok = 0
-    periods = pd.period_range(index[0].strftime("%Y-%m"), index[-1].strftime("%Y-%m"), freq="M")
-    for period in periods:
-        dst_months += 1
+    for period in pd.period_range(index[0].strftime("%Y-%m"), index[-1].strftime("%Y-%m"), freq="M"):
         try:
             part = _fetch_dst_cached(int(period.year), int(period.month))
         except Exception:
             part = None
         if part is not None and not part.empty:
-            dst_ok += 1; dst_parts.append(part)
+            dst_parts.append(part)
     dst = pd.concat(dst_parts).sort_index() if dst_parts else pd.Series(dtype=float)
 
     target = pd.date_range(index[0], periods=len(index), freq=pd.Timedelta(seconds=cadence_s), tz="UTC")
@@ -305,93 +242,23 @@ def load_case(observatory: str, case: Case, cache_dir: Path | None = None) -> Di
     dst_aligned = dst.reindex(target, method="ffill", tolerance=tolerance) if not dst.empty else pd.Series(np.nan, index=target)
     refs = pm.reference_masks(kp_aligned, dst_aligned)
     data = {
-        "observatory": observatory, "case": asdict(case), "series": series.reset_index(drop=True),
-        "residual": residual, "cadence_s": cadence_s, "completeness": completeness, "refs": refs,
-        "kp_coverage": float(refs["kp_known"].mean()), "dst_coverage": float(refs["dst_known"].mean()),
-        "reference_coverage": float(refs["known"].mean()), "kp_error": kp_error,
-        "dst_months_requested": dst_months, "dst_months_available": dst_ok, "cache_hit": False,
+        "observatory": observatory,
+        "case": asdict(case),
+        "series": series.reset_index(drop=True),
+        "residual": residual,
+        "cadence_s": cadence_s,
+        "completeness": completeness,
+        "refs": refs,
+        "kp_coverage": float(refs["kp_known"].mean()),
+        "dst_coverage": float(refs["dst_known"].mean()),
+        "reference_coverage": float(refs["known"].mean()),
+        "cache_hit": False,
     }
     _save_case_cache(path, data)
     return data
 
 
 def score_case(data: Dict[str, Any], active_threshold: float, storm_threshold: float) -> Dict[str, Any]:
-    return pm.score_thresholds(data["residual"], data["refs"], data["cadence_s"], active_threshold, storm_threshold)
-
-
-def choose_threshold(cases: Sequence[Dict[str, Any]], candidates: Sequence[float], kind: str, fixed_other: float) -> float:
-    best: Tuple[float, float] | None = None
-    for threshold in candidates:
-        rows = []
-        for data in cases:
-            score = score_case(data, threshold if kind == "active" else fixed_other, threshold if kind == "storm" else fixed_other)
-            rows.append(score[kind]["sample_level"])
-        aggregate = aggregate_binary(rows)
-        if aggregate["f1"] is None:
-            continue
-        candidate = (float(aggregate["f1"]), float(threshold))
-        if best is None or candidate > best:
-            best = candidate
-    return best[1] if best is not None else fixed_other
-
-
-def aggregate_test(cases: Sequence[Dict[str, Any]], active_threshold: float, storm_threshold: float) -> Dict[str, Any]:
-    active_rows = []; storm_rows = []; baseline = []; coverage = []; completeness = []
-    for data in cases:
-        score = score_case(data, active_threshold, storm_threshold)
-        active_rows.append(score["active"]["sample_level"]); storm_rows.append(score["storm"]["sample_level"])
-        r = finite(data["residual"])
-        baseline.append({"mae": float(np.mean(np.abs(r))), "rmse": float(np.sqrt(np.mean(r ** 2))), "p95": float(np.percentile(np.abs(r), 95))})
-        coverage.append(data["reference_coverage"]); completeness.append(data["completeness"])
-    return {
-        "cases": len(cases), "active": aggregate_binary(active_rows), "storm": aggregate_binary(storm_rows),
-        "baseline": {"mean_mae_nt": float(np.mean([x["mae"] for x in baseline])) if baseline else None, "mean_rmse_nt": float(np.mean([x["rmse"] for x in baseline])) if baseline else None, "mean_p95_abs_nt": float(np.mean([x["p95"] for x in baseline])) if baseline else None},
-        "coverage": {"mean_reference": float(np.mean(coverage)) if coverage else None, "min_reference": float(np.min(coverage)) if coverage else None, "mean_completeness": float(np.mean(completeness)) if completeness else None, "min_completeness": float(np.min(completeness)) if completeness else None},
-        "case_metrics": {"active": active_rows, "storm": storm_rows},
-    }
-
-
-def release_gate(test_result: Dict[str, Any], min_cases_per_class: int, min_reference_coverage: float, min_completeness: float, min_storm_precision: float, min_storm_recall: float, min_storm_f1: float, max_storm_far: float) -> Dict[str, Any]:
-    checks = {
-        "minimum_test_cases": test_result["cases"] >= min_cases_per_class * 3,
-        "reference_coverage": (test_result["coverage"]["min_reference"] or 0.0) >= min_reference_coverage,
-        "data_completeness": (test_result["coverage"]["min_completeness"] or 0.0) >= min_completeness,
-        "storm_precision": (test_result["storm"]["precision"] or 0.0) >= min_storm_precision,
-        "storm_recall": (test_result["storm"]["recall"] or 0.0) >= min_storm_recall,
-        "storm_f1": (test_result["storm"]["f1"] or 0.0) >= min_storm_f1,
-        "storm_false_alarm_rate": (test_result["storm"]["false_alarm_rate"] or 1.0) <= max_storm_far,
-    }
-    return {"passed": all(checks.values()), "checks": checks}
-
-
-def _load_one(arg: tuple[str, Case, Path]) -> tuple[str, Case, Dict[str, Any]]:
-    observatory, case, cache_dir = arg
-    return observatory, case, load_case(observatory, case, cache_dir)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Production-grade held-out validation gate for the magnetometer pipeline.")
-    parser.add_argument("--observatory", default="VIC,BOU")
-    parser.add_argument("--years", default=",".join(map(str, DEFAULT_YEARS)))
-    parser.add_argument("--cases-per-class-per-year", type=int, default=DEFAULT_CASES_PER_CLASS_PER_YEAR)
-    parser.add_argument("--window-days", type=int, default=DEFAULT_WINDOW_DAYS)
-    parser.add_argument("--min-test-cases-per-class", type=int, default=2)
-    parser.add_argument("--min-reference-coverage", type=float, default=DEFAULT_MIN_REFERENCE_COVERAGE)
-    parser.add_argument("--min-completeness", type=float, default=DEFAULT_MIN_COMPLETENESS)
-    parser.add_argument("--min-storm-precision", type=float, default=DEFAULT_MIN_STORM_PRECISION)
-    parser.add_argument("--min-storm-recall", type=float, default=DEFAULT_MIN_STORM_RECALL)
-    parser.add_argument("--min-storm-f1", type=float, default=DEFAULT_MIN_STORM_F1)
-    parser.add_argument("--max-storm-false-alarm-rate", type=float, default=DEFAULT_MIN_STORM_FALSE_ALARM_RATE)
-    parser.add_argument("--bootstrap-iterations", type=int, default=DEFAULT_BOOTSTRAPS)
-    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
-    parser.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR))
-    parser.add_argument("--output-dir", default=str(REPO_ROOT / "magnetometer" / "data"))
-    parser.add_argument("--keep-case-json", action="store_true")
-    args = parser.parse_args()
-
-    observatories = [x.strip().upper() for x in args.observatory.split(",") if x.strip()]
-    years = sorted(set(int(x.strip()) for x in args.years.split(",") if x.strip()))
-    output_dir = Path(args.output_dir).resolve(); output_dir.mkdir(parents=True, exist_ok=True)
-    cache_dir = Path(args.cache_dir).resolve(); cache_dir.mkdir(parents=True, exist_ok=True)
-    workers = max(1, min(int(args.workers), 8))
-    started = time.perf_counter()
+    return pm.score_thresholds(
+        data["residual"], data["refs"], data["cadence_s"], active_threshold, storm_threshold
+    )
