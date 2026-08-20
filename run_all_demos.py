@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+RESULTS_DIR = ROOT / "weather" / "results"
 
 DEMOS = {
     "magnetometer": {
@@ -83,6 +84,7 @@ def run_weather(args: list[str], timeout: int):
     main_models = models - MOIRAI_MODELS
     moirai_models = models & MOIRAI_MODELS
     outputs = []
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     if main_models:
         main_args = replace_models(args, main_models) + ["--output", "/tmp/weather_main.json"]
@@ -105,7 +107,7 @@ def run_weather(args: list[str], timeout: int):
     extra = json.loads(moirai_path.read_text())
     for field, backends in extra.get("benchmark_metrics", {}).items():
         merged.setdefault("benchmark_metrics", {}).setdefault(field, {}).update(backends)
-    (ROOT / "weather_merged_results.json").write_text(json.dumps(merged, indent=2))
+    (RESULTS_DIR / "weather_merged_results.json").write_text(json.dumps(merged, indent=2))
     return outputs
 
 
