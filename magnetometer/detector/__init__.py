@@ -1,0 +1,1 @@
+"""Deterministic magnetometer detection pipeline."""
