@@ -13,8 +13,8 @@ RESULTS_DIR = ROOT / "weather" / "results"
 
 DEMOS = {
     "magnetometer": {
-        "script": ROOT / "magnetometer" / "detector" / "magnetometer_demo.py",
-        "self_test": ["--self-test"],
+        "script": ROOT / "magnetometer" / "detector" / "self_test.py",
+        "self_test": [],
         "real": ["--fetch-real-data", "--days", "7", "--start-date", "2024-01-01"],
     },
     "weather": {
@@ -32,8 +32,8 @@ DEMOS = {
         ],
     },
     "seisometer": {
-        "script": ROOT / "seisometer" / "seismic_demo.py",
-        "self_test": ["--self-test"],
+        "script": ROOT / "seisometer" / "self_test.py",
+        "self_test": [],
         "real": [
             "--fetch-real-data", "--network", "IU", "--station", "MAJO",
             "--channel", "BH?", "--start", "2024-01-01T07:00:00",
