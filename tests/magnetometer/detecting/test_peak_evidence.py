@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from magnetometer.detector_core import DetectorProfile, detect_activity_masks, flag_activity
+from magnetometer.detecting.detector_core import DetectorProfile, detect_activity_masks, flag_activity
 
 
 def test_short_peak_evidence_requires_causal_history_and_persistence():

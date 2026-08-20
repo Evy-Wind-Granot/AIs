@@ -200,6 +200,7 @@ def _save_case_cache(path: Path, data: Dict[str, Any]) -> None:
         "dst_coverage": np.asarray([data["dst_coverage"]], dtype=float),
         "reference_coverage": np.asarray([data["reference_coverage"]], dtype=float),
         "series": np.asarray(data["series"].to_numpy(dtype=float), dtype=float),
+        "baseline_version": np.asarray([pm.BASELINE_VERSION]),
     }
     try:
         with open(tmp, "wb") as fh:
@@ -228,13 +229,19 @@ def _load_case_cache(path: Path, observatory: str, case: Case) -> Optional[Dict[
                 "kp_known": np.asarray(z["kp_known"], dtype=bool),
                 "dst_known": np.asarray(z["dst_known"], dtype=bool),
             }
+            series = pd.Series(np.asarray(z["series"], dtype=float))
+            cadence_s = float(z["cadence_s"][0])
+            baseline_version = str(z["baseline_version"][0]) if "baseline_version" in z.files else ""
+            if baseline_version != pm.BASELINE_VERSION:
+                _, residual = pm.compute_qdc_baseline(series.to_numpy(dtype=float), cadence_s)
             return {
-                "observatory": observatory, "case": asdict(case), "series": pd.Series(np.asarray(z["series"], dtype=float)),
-                "residual": residual, "cadence_s": float(z["cadence_s"][0]),
+                "observatory": observatory, "case": asdict(case), "series": series,
+                "residual": residual, "cadence_s": cadence_s,
                 "completeness": float(z["completeness"][0]), "refs": refs,
                 "kp_coverage": float(z["kp_coverage"][0]), "dst_coverage": float(z["dst_coverage"][0]),
                 "reference_coverage": float(z["reference_coverage"][0]), "kp_error": None,
                 "dst_months_requested": None, "dst_months_available": None, "cache_hit": True,
+                "baseline_version": pm.BASELINE_VERSION,
             }
     except (OSError, ValueError, KeyError, EOFError):
         return None
@@ -310,6 +317,7 @@ def load_case(observatory: str, case: Case, cache_dir: Path | None = None) -> Di
         "kp_coverage": float(refs["kp_known"].mean()), "dst_coverage": float(refs["dst_known"].mean()),
         "reference_coverage": float(refs["known"].mean()), "kp_error": kp_error,
         "dst_months_requested": dst_months, "dst_months_available": dst_ok, "cache_hit": False,
+        "baseline_version": pm.BASELINE_VERSION,
     }
     _save_case_cache(path, data)
     return data
@@ -324,8 +332,15 @@ def choose_threshold(cases: Sequence[Dict[str, Any]], candidates: Sequence[float
     for threshold in candidates:
         rows = []
         for data in cases:
-            score = score_case(data, threshold if kind == "active" else fixed_other, threshold if kind == "storm" else fixed_other)
+            active_threshold = threshold if kind == "active" else fixed_other
+            storm_threshold = threshold if kind == "storm" else fixed_other
+            if not (0 < active_threshold < storm_threshold <= pm.PROD_MAJOR_STORM_NT <= pm.PROD_SEVERE_STORM_NT):
+                rows = []
+                break
+            score = score_case(data, active_threshold, storm_threshold)
             rows.append(score[kind]["sample_level"])
+        if not rows:
+            continue
         aggregate = aggregate_binary(rows)
         if aggregate["f1"] is None:
             continue
@@ -395,3 +410,165 @@ def main() -> None:
     cache_dir = Path(args.cache_dir).resolve(); cache_dir.mkdir(parents=True, exist_ok=True)
     workers = max(1, min(int(args.workers), 8))
     started = time.perf_counter()
+
+    splits, cases = discover_suite(years, args.cases_per_class_per_year, args.window_days)
+    by_split = {"calibration": [], "validation": [], "test": []}
+    loaded: List[Dict[str, Any]] = []
+    failures: List[Dict[str, Any]] = []
+
+    print("\n" + "=" * 88)
+    print("MAGNETOMETER PRODUCTION-GRADE VALIDATION")
+    print("=" * 88)
+    print(f"Observatories: {', '.join(observatories)}")
+    print(f"Years: {min(years)}-{max(years)}")
+    print(f"Window: {args.window_days} days")
+    print(f"Discovered cases: {len(cases)}")
+    print(f"Calibration years: {splits['calibration']}")
+    print(f"Validation years:  {splits['validation']}")
+    print(f"Final-test years:  {splits['test']}")
+    print(f"Case workers: {workers}")
+    print(f"Case cache: {cache_dir}")
+
+    jobs = [(observatory, case, cache_dir) for observatory in observatories for case in cases]
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(_load_one, job): job for job in jobs}
+        for future in as_completed(future_map):
+            observatory, case, _ = future_map[future]
+            try:
+                obs, completed_case, data = future.result()
+                loaded.append(data)
+                by_split[completed_case.split].append(data)
+                cache_label = "CACHE" if data.get("cache_hit") else "FETCH"
+                print(
+                    f"[OK {cache_label}] {obs} {completed_case.case_id} "
+                    f"ref={data['reference_coverage']:.1%} data={data['completeness']:.1%}",
+                    flush=True,
+                )
+                if args.keep_case_json:
+                    path = output_dir / f"validation_{obs}_{completed_case.case_id}.json"
+                    compact = {
+                        "observatory": obs,
+                        "case": asdict(completed_case),
+                        "completeness": data["completeness"],
+                        "reference_coverage": data["reference_coverage"],
+                        "kp_coverage": data["kp_coverage"],
+                        "dst_coverage": data["dst_coverage"],
+                        "cadence_seconds": data["cadence_s"],
+                    }
+                    path.write_text(json.dumps(compact, indent=2) + "\n")
+            except Exception as exc:
+                failures.append({"observatory": observatory, "case": asdict(case), "error": str(exc)})
+                print(f"[FAIL] {observatory} {case.case_id}: {exc}", flush=True)
+
+    calibration = by_split["calibration"]
+    validation = by_split["validation"]
+    test = by_split["test"]
+    if not calibration or not validation or not test:
+        raise RuntimeError("Production gate requires successful calibration, validation, and final-test cases.")
+
+    selected_active = choose_threshold(calibration, ACTIVE_CANDIDATES, "active", pm.PROD_ACTIVE_NT)
+    selected_storm = choose_threshold(calibration, STORM_CANDIDATES, "storm", pm.PROD_MINOR_STORM_NT)
+    validation_production = aggregate_test(validation, pm.PROD_ACTIVE_NT, pm.PROD_MINOR_STORM_NT)
+    validation_candidate = aggregate_test(validation, selected_active, selected_storm)
+    test_production = aggregate_test(test, pm.PROD_ACTIVE_NT, pm.PROD_MINOR_STORM_NT)
+    test_candidate = aggregate_test(test, selected_active, selected_storm)
+    test_active_ci = bootstrap_metric_ci(test_production["case_metrics"]["active"], "f1", 101, args.bootstrap_iterations)
+    test_storm_ci = bootstrap_metric_ci(test_production["case_metrics"]["storm"], "f1", 202, args.bootstrap_iterations)
+    gate = release_gate(
+        test_production,
+        args.min_test_cases_per_class,
+        args.min_reference_coverage,
+        args.min_completeness,
+        args.min_storm_precision,
+        args.min_storm_recall,
+        args.min_storm_f1,
+        args.max_storm_false_alarm_rate,
+    )
+    test_counts = {
+        class_name: sum(1 for row in test if row["case"]["class_name"] == class_name)
+        for class_name in ("quiet", "active", "storm")
+    }
+    gate["checks"]["test_cases_per_class"] = all(
+        count >= args.min_test_cases_per_class for count in test_counts.values()
+    )
+    gate["passed"] = all(gate["checks"].values())
+
+    result = {
+        "release_status": "PASS" if gate["passed"] else "FAIL",
+        "release_gate": gate,
+        "suite": {
+            "observatories": observatories,
+            "years": years,
+            "splits": splits,
+            "window_days": args.window_days,
+            "cases_per_class_per_year": args.cases_per_class_per_year,
+            "discovered_cases": len(cases),
+            "successful_cases": len(loaded),
+            "failed_cases": len(failures),
+            "test_case_counts_by_class": test_counts,
+        },
+        "performance": {
+            "workers": workers,
+            "cache_dir": str(cache_dir),
+            "runtime_seconds": time.perf_counter() - started,
+            "cache_hits": int(sum(bool(data.get("cache_hit")) for data in loaded)),
+            "cache_misses": int(sum(not bool(data.get("cache_hit")) for data in loaded)),
+        },
+        "production_thresholds": {
+            "active_nt": pm.PROD_ACTIVE_NT,
+            "storm_nt": pm.PROD_MINOR_STORM_NT,
+        },
+        "selected_on_calibration_only": {
+            "active_nt": selected_active,
+            "storm_nt": selected_storm,
+        },
+        "validation_years": {
+            "production_thresholds": validation_production,
+            "calibration_selected_candidate": validation_candidate,
+        },
+        "final_test_years": {
+            "production_thresholds": test_production,
+            "calibration_selected_candidate": test_candidate,
+            "confidence_intervals_95pct": {
+                "active_f1": test_active_ci,
+                "storm_f1": test_storm_ci,
+            },
+        },
+        "reference_sources": {
+            "primary": "GFZ Kp",
+            "secondary": "Kyoto Dst when available",
+            "dst_available_fraction": float(np.mean([row["dst_coverage"] for row in test])) if test else 0.0,
+            "note": "Kp is a coarse global reference, not local station ground truth.",
+        },
+        "failures": failures,
+    }
+    path = output_dir / "magnetometer_production_grade_validation.json"
+    path.write_text(json.dumps(result, indent=2) + "\n")
+
+    print("\n" + "-" * 88)
+    print("FINAL HELD-OUT TEST - PRODUCTION THRESHOLDS")
+    print(f"Active precision:         {test_production['active']['precision']:.3f}")
+    print(f"Active recall:            {test_production['active']['recall']:.3f}")
+    print(f"Active F1:                {test_production['active']['f1']:.3f}")
+    print(f"Storm precision:          {test_production['storm']['precision']:.3f}")
+    print(f"Storm recall:             {test_production['storm']['recall']:.3f}")
+    print(f"Storm F1:                 {test_production['storm']['f1']:.3f}")
+    print(f"Storm false alarm rate:   {test_production['storm']['false_alarm_rate']:.3f}")
+    print(f"Storm F1 95% CI:          {test_storm_ci['lower']!s} .. {test_storm_ci['upper']!s}")
+    print("-" * 88)
+    print(f"Calibration-selected active threshold: {selected_active:.0f} nT")
+    print(f"Calibration-selected storm threshold:  {selected_storm:.0f} nT")
+    print("NOTE: thresholds are NOT changed automatically.")
+    print("-" * 88)
+    print(f"Release gate:              {'PASS' if gate['passed'] else 'FAIL'}")
+    for name, passed in gate["checks"].items():
+        print(f"  {'PASS' if passed else 'FAIL'}  {name}")
+    print(f"Runtime:                   {result['performance']['runtime_seconds']:.1f}s")
+    print(f"Cache hits/misses:         {result['performance']['cache_hits']}/{result['performance']['cache_misses']}")
+    print(f"Report: {path}")
+    print("=" * 88)
+    raise SystemExit(0 if gate["passed"] else 2)
+
+
+if __name__ == "__main__":
+    main()

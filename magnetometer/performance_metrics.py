@@ -22,7 +22,7 @@ REPO_ROOT = HERE.parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from causal_baseline import compute_causal_qdc_baseline
+from causal_baseline import BASELINE_VERSION, compute_causal_qdc_baseline
 from detector_core import detect_activity_masks
 from magnetometer_demo import (
     PROD_ACTIVE_NT,

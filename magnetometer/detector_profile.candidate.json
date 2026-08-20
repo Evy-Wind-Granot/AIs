@@ -1,0 +1,237 @@
+{
+  "status": "candidate",
+  "profile": {
+    "active_nt": 15.0,
+    "storm_nt": 50.0,
+    "unsettled_nt": 10.0,
+    "major_nt": 100.0,
+    "severe_nt": 200.0,
+    "active_slow_ratio": 0.65,
+    "active_slow_3h_ratio": 0.55,
+    "active_upper_ratio": 1.0,
+    "active_fast_ratio": 1.15,
+    "active_medium_slow_ratio": 0.65,
+    "active_medium_upper_ratio": 0.35,
+    "active_peak_ratio": 1.75,
+    "active_peak_medium_ratio": 0.5,
+    "storm_fast_ratio": 1.5,
+    "storm_fast_medium_ratio": 0.55,
+    "storm_upper_ratio": 1.1,
+    "storm_upper_medium_ratio": 1.0,
+    "storm_medium_ratio": 0.8,
+    "storm_release_ratio": 0.6,
+    "storm_peak_ratio": 1.7,
+    "storm_peak_medium_ratio": 0.65,
+    "peak_window_minutes": 5.0,
+    "active_on_minutes": 3.0,
+    "active_off_minutes": 180.0,
+    "storm_on_minutes": 20.0,
+    "storm_off_minutes": 300.0,
+    "major_upper_ratio": 0.9,
+    "major_fast_ratio": 1.15,
+    "major_medium_ratio": 0.8,
+    "severe_upper_ratio": 0.9,
+    "severe_fast_ratio": 1.1,
+    "severe_medium_ratio": 0.8
+  },
+  "sampling_policy": {
+    "target_cases_per_station_year": 10,
+    "minimum_station_cases": 4,
+    "minimum_pooled_cases_per_year": 8,
+    "minimum_cases_per_class_per_split": 12,
+    "under_supplied_years_retain_all_independent_usable_cases": true
+  },
+  "selection": {
+    "calibration_years": [
+      2022,
+      2023
+    ],
+    "validation_years": [
+      2024
+    ],
+    "final_test_years": [
+      2025
+    ],
+    "final_test_used": false,
+    "candidate_pool_per_class_per_year": 20
+  },
+  "calibration": {
+    "active": {
+      "tp": 75017,
+      "tn": 697625,
+      "fp": 205319,
+      "fn": 33622,
+      "precision": 0.2675967410535928,
+      "recall": 0.6905162970940454,
+      "f1": 0.38571630567517196,
+      "far": 0.22738840946946876
+    },
+    "storm": {
+      "tp": 8614,
+      "tn": 956785,
+      "fp": 16392,
+      "fn": 29792,
+      "precision": 0.34447732544189397,
+      "recall": 0.22428787168671563,
+      "f1": 0.2716835930107866,
+      "far": 0.01684380128178122
+    },
+    "active_event": {
+      "reference_events": 217,
+      "predicted_events": 536,
+      "matched_events": 146,
+      "missed_events": 71,
+      "false_positive_events": 390,
+      "precision": 0.27238805970149255,
+      "recall": 0.6728110599078341,
+      "f1": 0.3877822045152723
+    },
+    "storm_event": {
+      "reference_events": 112,
+      "predicted_events": 32,
+      "matched_events": 23,
+      "missed_events": 89,
+      "false_positive_events": 9,
+      "precision": 0.71875,
+      "recall": 0.20535714285714285,
+      "f1": 0.3194444444444445
+    }
+  },
+  "calibration_passed": false,
+  "validation": {
+    "active": {
+      "tp": 47927,
+      "tn": 403051,
+      "fp": 114804,
+      "fn": 17321,
+      "precision": 0.2945167177735035,
+      "recall": 0.7345359244727808,
+      "f1": 0.4204510064523488,
+      "far": 0.22169140010234525
+    },
+    "storm": {
+      "tp": 15165,
+      "tn": 540209,
+      "fp": 13074,
+      "fn": 14655,
+      "precision": 0.5370232656963774,
+      "recall": 0.5085513078470825,
+      "f1": 0.5223996279646567,
+      "far": 0.023629860306570057
+    },
+    "active_event": {
+      "reference_events": 127,
+      "predicted_events": 290,
+      "matched_events": 82,
+      "missed_events": 45,
+      "false_positive_events": 208,
+      "precision": 0.2827586206896552,
+      "recall": 0.6456692913385826,
+      "f1": 0.3932853717026379
+    },
+    "storm_event": {
+      "reference_events": 52,
+      "predicted_events": 32,
+      "matched_events": 20,
+      "missed_events": 32,
+      "false_positive_events": 12,
+      "precision": 0.625,
+      "recall": 0.38461538461538464,
+      "f1": 0.4761904761904762
+    }
+  },
+  "failed_source_cases": [
+    {
+      "observatory": "VIC",
+      "case": {
+        "case_id": "calibration_active_20230228",
+        "center_date": "2023-02-28",
+        "start_date": "2023-02-25",
+        "days": 7,
+        "class_name": "active",
+        "year": 2023,
+        "split": "calibration"
+      },
+      "error": "Too few valid samples: 2277/10080 (22.6%)."
+    },
+    {
+      "observatory": "VIC",
+      "case": {
+        "case_id": "calibration_active_20230902",
+        "center_date": "2023-09-02",
+        "start_date": "2023-08-30",
+        "days": 7,
+        "class_name": "active",
+        "year": 2023,
+        "split": "calibration"
+      },
+      "error": "Too few valid samples: 0/10080 (0.0%)."
+    },
+    {
+      "observatory": "VIC",
+      "case": {
+        "case_id": "calibration_storm_20230227",
+        "center_date": "2023-02-27",
+        "start_date": "2023-02-24",
+        "days": 7,
+        "class_name": "storm",
+        "year": 2023,
+        "split": "calibration"
+      },
+      "error": "Too few valid samples: 900/10080 (8.9%)."
+    },
+    {
+      "observatory": "VIC",
+      "case": {
+        "case_id": "validation_active_20240101",
+        "center_date": "2024-01-01",
+        "start_date": "2023-12-29",
+        "days": 7,
+        "class_name": "active",
+        "year": 2024,
+        "split": "validation"
+      },
+      "error": "Too few valid samples: 4320/10080 (42.9%)."
+    },
+    {
+      "observatory": "BOU",
+      "case": {
+        "case_id": "calibration_active_20230228",
+        "center_date": "2023-02-28",
+        "start_date": "2023-02-25",
+        "days": 7,
+        "class_name": "active",
+        "year": 2023,
+        "split": "calibration"
+      },
+      "error": "Too few valid samples: 7/10080 (0.1%)."
+    },
+    {
+      "observatory": "BOU",
+      "case": {
+        "case_id": "calibration_storm_20230227",
+        "center_date": "2023-02-27",
+        "start_date": "2023-02-24",
+        "days": 7,
+        "class_name": "storm",
+        "year": 2023,
+        "split": "calibration"
+      },
+      "error": "Too few valid samples: 7/10080 (0.1%)."
+    }
+  ],
+  "passed_validation": false,
+  "certification_policy": {
+    "search": "feasible-first, worst-group, aggregate-quality, safety-regularized",
+    "production_floors": {
+      "sample_precision": 0.85,
+      "sample_recall": 0.8,
+      "sample_f1": 0.82,
+      "storm_false_alarm_rate": 0.01,
+      "storm_event_precision": 0.85,
+      "storm_event_recall": 0.9,
+      "storm_event_f1": 0.87
+    },
+    "calibration_must_also_pass": true
+  }
+}

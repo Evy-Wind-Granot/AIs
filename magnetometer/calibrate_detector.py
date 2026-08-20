@@ -66,6 +66,7 @@ DEFAULT_WORKERS = 6
 class PreparedCase:
     __slots__ = (
         "residual", "cadence_s", "known", "active_ref", "storm_ref",
+        "fast_5m", "medium_15m", "upper_30m", "slow_60m", "slow_3h",
     )
 
     def __init__(self, data: dict) -> None:
@@ -78,6 +79,66 @@ class PreparedCase:
         self.known = np.asarray(refs["known"], dtype=bool)
         self.active_ref = np.asarray(refs["active"], dtype=bool)
         self.storm_ref = np.asarray(refs["storm"], dtype=bool)
+        self.fast_5m, self.medium_15m, self.upper_30m, self.slow_60m, self.slow_3h = _prepare_case_features(residual, self.cadence_s)
+
+    @property
+    def n(self) -> int:
+        return int(self.residual.size)
+
+    @staticmethod
+    def _window(seconds: float, cadence_s: float, cap: int = 0) -> int:
+        n = max(1, int(round(seconds / max(float(cadence_s), 1.0))))
+        return min(n, cap) if cap else n
+
+    def predict(self, profile: DetectorProfile) -> tuple[np.ndarray, np.ndarray]:
+        peak = _rolling_max(np.where(np.isfinite(self.residual), np.abs(self.residual), np.nan), self._window(profile.peak_window_minutes * 60, self.cadence_s, 61))
+        history_ready = (
+            np.isfinite(self.fast_5m)
+            & np.isfinite(self.medium_15m)
+            & np.isfinite(self.upper_30m)
+            & np.isfinite(self.slow_60m)
+            & np.isfinite(self.slow_3h)
+            & np.isfinite(peak)
+            & np.isfinite(self.residual)
+        )
+        active_evidence = history_ready & (
+            (self.medium_15m >= profile.active_nt)
+            | ((self.slow_60m >= profile.active_slow_ratio * profile.active_nt) & (self.medium_15m >= profile.active_medium_slow_ratio * profile.active_nt))
+            | ((self.slow_3h >= profile.active_slow_3h_ratio * profile.active_nt) & (self.medium_15m >= profile.active_medium_slow_ratio * profile.active_nt))
+            | ((self.upper_30m >= profile.active_upper_ratio * profile.active_nt) & (self.medium_15m >= profile.active_medium_upper_ratio * profile.active_nt))
+            | ((self.fast_5m >= profile.active_fast_ratio * profile.active_nt) & (self.medium_15m >= profile.active_medium_slow_ratio * profile.active_nt))
+            | ((peak >= profile.active_peak_ratio * profile.active_nt) & (self.medium_15m >= profile.active_peak_medium_ratio * profile.active_nt))
+        )
+        strong_short = (self.fast_5m >= profile.storm_fast_ratio * profile.storm_nt) & (self.medium_15m >= profile.storm_fast_medium_ratio * profile.storm_nt)
+        strong_peak = (peak >= profile.storm_peak_ratio * profile.storm_nt) & (self.medium_15m >= profile.storm_peak_medium_ratio * profile.storm_nt)
+        strong_30m = (self.upper_30m >= profile.storm_upper_ratio * profile.storm_nt) & (self.medium_15m >= profile.storm_upper_medium_ratio * profile.storm_nt)
+        sustained = (
+            (self.medium_15m >= profile.storm_nt)
+            | ((self.slow_60m >= profile.storm_nt) & (self.medium_15m >= profile.storm_medium_ratio * profile.storm_nt))
+            | ((self.slow_3h >= profile.storm_nt) & (self.medium_15m >= profile.storm_medium_ratio * profile.storm_nt))
+        )
+        storm_evidence = history_ready & (sustained | strong_short | strong_peak | strong_30m)
+
+        active = _hysteresis_mask_fast(
+            active_evidence,
+            history_ready & (self.medium_15m <= 0.60 * profile.active_nt),
+            self._window(profile.active_on_minutes * 60, self.cadence_s),
+            self._window(profile.active_off_minutes * 60, self.cadence_s),
+        )
+        storm = _hysteresis_mask_fast(
+            storm_evidence,
+            history_ready & (self.medium_15m <= profile.storm_release_ratio * profile.storm_nt),
+            self._window(profile.storm_on_minutes * 60, self.cadence_s),
+            self._window(profile.storm_off_minutes * 60, self.cadence_s),
+        )
+        active &= history_ready
+        storm &= history_ready
+        return active, storm
+
+
+def _prepare_case(data: dict) -> PreparedCase:
+    """Compatibility factory that caches profile-independent case evidence."""
+    return PreparedCase(data)
 
 
 def _binary(pred: np.ndarray, truth: np.ndarray) -> dict[str, float | int | None]:
@@ -92,6 +153,63 @@ def _binary(pred: np.ndarray, truth: np.ndarray) -> dict[str, float | int | None
     f1 = 2 * precision * recall / (precision + recall) if precision is not None and recall is not None and precision + recall else None
     far = fp / (fp + tn) if fp + tn else None
     return {"tp": tp, "tn": tn, "fp": fp, "fn": fn, "precision": precision, "recall": recall, "f1": f1, "far": far}
+
+
+def _hysteresis_mask_fast(on: np.ndarray, off: np.ndarray, min_on: int, min_off: int) -> np.ndarray:
+    """Small linear state machine used after evidence has been cached."""
+    on = np.asarray(on, dtype=bool)
+    off = np.asarray(off, dtype=bool)
+    if on.shape != off.shape:
+        raise ValueError("on/off masks must have identical shapes")
+    out = np.zeros(on.size, dtype=bool)
+    state = False
+    candidate = 0
+    min_on = max(1, int(min_on))
+    min_off = max(1, int(min_off))
+    for i in range(on.size):
+        if not state:
+            candidate = candidate + 1 if on[i] else 0
+            if candidate >= min_on:
+                state = True
+                candidate = 0
+            out[i] = state
+        else:
+            out[i] = state
+            candidate = candidate + 1 if off[i] else 0
+            if candidate >= min_off:
+                state = False
+                candidate = 0
+    return out
+
+
+def _rolling_median(values: np.ndarray, window: int) -> np.ndarray:
+    return pd.Series(values, copy=False).rolling(window, min_periods=window).median().to_numpy(dtype=float, copy=False)
+
+
+def _rolling_quantile(values: np.ndarray, window: int, quantile: float) -> np.ndarray:
+    return pd.Series(values, copy=False).rolling(window, min_periods=window).quantile(quantile).to_numpy(dtype=float, copy=False)
+
+
+def _rolling_max(values: np.ndarray, window: int) -> np.ndarray:
+    return pd.Series(values, copy=False).rolling(window, min_periods=window).max().to_numpy(dtype=float, copy=False)
+
+
+def _prepare_case_features(residual: np.ndarray, cadence_s: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute profile-independent rolling evidence once per calibration case."""
+    if cadence_s <= 0 or not np.isfinite(cadence_s):
+        raise ValueError("cadence_s must be a positive finite number")
+    magnitude = np.abs(np.asarray(residual, dtype=float))
+    safe = np.where(np.isfinite(magnitude), magnitude, np.nan)
+
+    def w(seconds: float, cap: int) -> int:
+        return min(max(1, int(round(seconds / max(cadence_s, 1.0)))), cap)
+
+    fast = _rolling_median(safe, w(5 * 60, 31))
+    medium = _rolling_median(safe, w(15 * 60, 61))
+    upper = _rolling_quantile(safe, w(30 * 60, 121), 0.75)
+    slow = _rolling_median(safe, w(60 * 60, 181))
+    slow3 = _rolling_median(safe, w(3 * 3600, 361))
+    return fast, medium, upper, slow, slow3
 
 
 def _counts(rows: Iterable[dict]) -> dict:
@@ -162,9 +280,7 @@ def _merge_event_metrics(rows: Iterable[dict]) -> dict:
 
 
 def _score_case(case: PreparedCase, profile: DetectorProfile) -> tuple[dict, dict, dict, dict]:
-    from detector_core import detect_activity_masks
-
-    active, storm, _major, _severe, _ = detect_activity_masks(case.residual, cadence_s=case.cadence_s, profile=profile, include_anomaly=False)
+    active, storm = case.predict(profile)
     known = case.known & np.isfinite(case.residual)
     active_sample = _binary(active[known], case.active_ref[known])
     storm_sample = _binary(storm[known], case.storm_ref[known])

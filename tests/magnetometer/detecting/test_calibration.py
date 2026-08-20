@@ -3,7 +3,7 @@ import time
 import numpy as np
 
 from magnetometer.calibrate_detector import PreparedCase, _prepare_case, _hysteresis_mask_fast
-from magnetometer.detector_core import DetectorProfile
+from magnetometer.detecting.detector_core import DetectorProfile
 
 
 def test_prepare_case_computes_profile_independent_features_once() -> None:
