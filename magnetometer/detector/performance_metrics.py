@@ -21,10 +21,10 @@ import pandas as pd
 
 from magnetometer_demo import (
     fetch_kp_gfz,
-    fetch_intermagnet_iaga2002,
     handle_gaps,
     run_analysis,
 )
+from intermagnet_client import fetch_intermagnet_long_range
 
 
 @dataclass
@@ -215,11 +215,13 @@ def evaluate_period(
     days: int,
     column: str = "f_nt",
     cadence_s: int = 60,
+    chunk_days: int = 7,
 ) -> Dict[str, Any]:
-    text = fetch_intermagnet_iaga2002(
+    text = fetch_intermagnet_long_range(
         observatory=observatory,
         start_date=start_date,
         duration_days=days,
+        chunk_days=chunk_days,
     )
     df = handle_gaps(
         __import__("magnetometer_demo").parse_iaga2002_to_dataframe(text)[column],
@@ -260,6 +262,7 @@ def evaluate_period(
         "days": days,
         "column": column,
         "cadence_s": cadence_s,
+        "chunk_days": chunk_days,
         "valid_samples": int(valid.sum()),
         "kp_range": [float(np.nanmin(kp_aligned)), float(np.nanmax(kp_aligned))],
         "sample": {
@@ -295,10 +298,11 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--column", default="f_nt", choices=["x_nt", "y_nt", "z_nt", "f_nt"])
     ap.add_argument("--cadence-s", type=int, default=60)
+    ap.add_argument("--chunk-days", type=int, default=7, help="INTERMAGNET request size used for long-range downloads")
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
 
-    report = evaluate_period(args.observatory, args.start_date, args.days, args.column, args.cadence_s)
+    report = evaluate_period(args.observatory, args.start_date, args.days, args.column, args.cadence_s, args.chunk_days)
     print("\n=== MAGNETOMETER DETECTOR PERFORMANCE ===")
     print(f"Observatory: {report['observatory']} | Period: {report['start_date']} | Days: {report['days']}")
     print(f"Valid samples: {report['valid_samples']} | Kp range: {report['kp_range']}")
