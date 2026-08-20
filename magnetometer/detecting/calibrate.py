@@ -1,7 +1,7 @@
 """Canonical production calibrator entry point.
 
 This module keeps calibration and live inference on exactly the same detector
-implementation.  It also narrows the search space to profiles that satisfy
+implementation. It also narrows the search space to profiles that satisfy
 basic safety invariants before expensive scoring.
 """
 from dataclasses import asdict
@@ -12,13 +12,10 @@ from .. import production_grade_validation as pg
 from .. import detector_core as live_detector
 
 pg.pm.compute_qdc_baseline = causal_baseline.compute_causal_qdc_baseline
-pg.DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "case_cache_causal_v9"
+pg.DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "case_cache_causal_v10"
 
 from .. import calibrate_detector as _impl  # noqa: E402
 
-# Search only profiles that are capable of coherent, low-FAR detection.  The
-# live detector itself remains authoritative; the calibration predictor below
-# delegates directly to it so calibration cannot optimize a different model.
 _impl.PARAMETER_GRID.update({
     "active_nt": (20.0, 25.0, 30.0, 35.0, 40.0, 50.0),
     "storm_nt": (50.0, 60.0, 70.0, 80.0, 100.0, 120.0, 150.0),
@@ -53,8 +50,6 @@ def _shared_predict(self, profile):
 
 
 _impl.PreparedCase.predict = _shared_predict
-
-# Run multiple bounded coordinate-descent passes until the profile is stable.
 _original_coordinate_descent = _impl._coordinate_descent
 
 
