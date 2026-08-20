@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rpcso.com/cascadia-sentinel/schemas/magnetometer.v1.json",
+  "title": "Magnetometer message v1",
+  "description": "~1 Hz, 3-axis; one reading per message.",
+  "type": "object",
+  "allOf": [{"$ref": "skeleton.v1.json"}],
+  "properties": {
+    "payload": {
+      "type": "object",
+      "required": ["x_nt", "y_nt", "z_nt"],
+      "properties": {
+        "x_nt": {"type": "number", "description": "nanotesla"},
+        "y_nt": {"type": "number", "description": "nanotesla"},
+        "z_nt": {"type": "number", "description": "nanotesla"},
+        "local_temperature_c": {"type": "number", "description": "°C, board sensor at the magnetometer head (optional; MCP9808)"},
+        "remote_temperature_c": {"type": "number", "description": "°C, second board sensor (optional; MCP9808)"}
+      },
+      "additionalProperties": false,
+      "description": "x/y/z required; the two board temperatures are optional"
+    }
+  },
+  "examples": [{
+    "sequence_number": 67890,
+    "timestamp": [{"seconds": 1783123456, "nanoseconds": 789012345, "source": "NTP-LOCAL"}],
+    "payload": {
+      "x_nt": 21000.5,
+      "y_nt": -3400.2,
+      "z_nt": 48000.0,
+      "local_temperature_c": 24.9375,
+      "remote_temperature_c": 22.5625
+    }
+  }]
+}
