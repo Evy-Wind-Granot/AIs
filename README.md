@@ -1,6 +1,6 @@
 # Cascadia Sentinel — Model Demos
 
-The repository is organized by instrument, with the magnetometer further split by responsibility.
+The repository is organized by instrument, with the magnetometer split into two independent subsystems.
 
 ## Repository layout
 
@@ -10,30 +10,38 @@ AIs/
 │   ├── detector/          # deterministic/QDC activity detection
 │   └── forecasting/       # causal ML forecasting + hybrid inference
 ├── seisometer/            # PhaseNet / EQTransformer seismic processing
-├── weather_tsfm_engine_v2_production_hybrid_fixed.py
-├── run_all_demos.py
-└── run_all_demos.sh
+├── weather/               # production weather time-series forecasting
+├── run_all_demos.py       # canonical all-instrument launcher
+└── run_all_demos.sh       # shell wrapper for run_all_demos.py
 ```
 
 ### Magnetometer
 
-- `magnetometer/detector/` contains the deterministic magnetometer analysis and activity classification path.
-- `magnetometer/forecasting/` contains causal feature engineering, the multi-horizon forecaster, and hybrid inference.
+- `magnetometer/detector/` is the current deterministic/QDC activity-detection subsystem.
+- `magnetometer/forecasting/` is the separate causal ML forecasting subsystem.
 
-The forecasting system is intentionally separate from the detector: forecasting provides future disturbance/storm-risk predictions and does not replace deterministic detection.
+Forecasting is advisory and forward-looking; it does not replace the deterministic detector.
 
-### Seismometer
+### Seisometer
 
-Seismic processing is under `seisometer/`, including the PhaseNet/EQTransformer demo and stored picking results.
+`seisometer/` contains the seismic demo and stored PhaseNet/EQTransformer results.
 
-### Compatibility
+### Weather
 
-The historical root entry points `magnetometer_demo.py` and `seismic_demo.py` remain as thin wrappers so existing commands continue to work. New code should import/use the instrument packages directly.
+`weather/` contains the production TSFM engine and its benchmark entry point.
 
-## Quick start
+## Run everything
 
 ```bash
-python magnetometer_demo.py --self-test
-python seismic_demo.py --self-test
+./run_all_demos.sh --self-test
+# or
 python run_all_demos.py --self-test
 ```
+
+For public-data runs:
+
+```bash
+./run_all_demos.sh --real-data
+```
+
+There are no longer root-level duplicate instrument demo wrappers or the random-demo launcher.
