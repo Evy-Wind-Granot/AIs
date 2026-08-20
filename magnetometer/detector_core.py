@@ -54,8 +54,6 @@ class DetectorProfile:
     storm_off_minutes: float = DEFAULT_STORM_OFF_MINUTES
     peak_window_minutes: float = DEFAULT_PEAK_WINDOW_MINUTES
 
-    # Legacy fields remain in the profile schema for compatibility. The v2.1
-    # detector intentionally ignores the old ratio rules.
     active_slow_ratio: float = 0.65
     active_slow_3h_ratio: float = 0.55
     active_upper_ratio: float = 1.0
@@ -117,7 +115,10 @@ def _load_profile_cached(path_text: str) -> DetectorProfile:
         raise RuntimeError(f"detector profile {candidate} is not certified")
     version = payload.get("detector_version")
     if version not in (None, DETECTOR_VERSION):
-        raise RuntimeError(f"detector profile {candidate} targets {version!r}, expected {DETECTOR_VERSION!r}")
+        raise RuntimeError(
+            f"detector profile {candidate} targets {version!r}; "
+            f"expected {DETECTOR_VERSION}"
+        )
     return DetectorProfile.from_dict(payload.get("profile", payload))
 
 
@@ -143,13 +144,7 @@ def _rolling_max(values: np.ndarray, window: int) -> np.ndarray:
     return pd.Series(values, copy=False).rolling(window, min_periods=window).max().to_numpy(dtype=float, copy=False)
 
 
-def _hysteresis_mask(
-    evidence_on: np.ndarray,
-    evidence_off: np.ndarray,
-    min_on: int,
-    min_off: int,
-    valid: Optional[np.ndarray] = None,
-) -> np.ndarray:
+def _hysteresis_mask(evidence_on: np.ndarray, evidence_off: np.ndarray, min_on: int, min_off: int, valid: Optional[np.ndarray] = None) -> np.ndarray:
     on = np.asarray(evidence_on, dtype=bool)
     off = np.asarray(evidence_off, dtype=bool)
     valid_mask = np.ones(on.shape, dtype=bool) if valid is None else np.asarray(valid, dtype=bool)
@@ -181,45 +176,17 @@ def _causal_robust_features(x: np.ndarray, cadence_s: float, p: DetectorProfile)
     magnitude = np.abs(x)
     valid = np.isfinite(magnitude)
     safe = np.where(valid, magnitude, np.nan)
-
     fast = _rolling_median(safe, _window(5 * 60, cadence_s, 31))
     medium = _rolling_median(safe, _window(15 * 60, cadence_s, 61))
     upper_30m = _rolling_quantile(safe, _window(30 * 60, cadence_s, 121), 0.75)
     slow_60m = _rolling_median(safe, _window(60 * 60, cadence_s, 181))
     slow_3h = _rolling_median(safe, _window(3 * 3600, cadence_s, 361))
     peak = _rolling_max(safe, _window(p.peak_window_minutes * 60, cadence_s, 61))
-
-    # Local scale is centered on the signed residual and is used only as
-    # corroborating evidence. It cannot independently trigger an alert.
     center = _rolling_median(x, _window(60 * 60, cadence_s, 181))
     mad = _rolling_median(np.abs(x - center), _window(60 * 60, cadence_s, 181))
     scale = np.maximum(p.noise_floor_nt, 1.4826 * mad)
-
-    ready = (
-        valid
-        & np.isfinite(fast)
-        & np.isfinite(medium)
-        & np.isfinite(upper_30m)
-        & np.isfinite(slow_60m)
-        & np.isfinite(slow_3h)
-        & np.isfinite(peak)
-        & np.isfinite(scale)
-    )
-    return {
-        "valid": valid,
-        "ready": ready,
-        "fast": fast,
-        "medium": medium,
-        "upper_30m": upper_30m,
-        "slow_60m": slow_60m,
-        "slow_3h": slow_3h,
-        "peak": peak,
-        "scale": scale,
-        "z_fast": fast / scale,
-        "z_medium": medium / scale,
-        "z_slow": slow_60m / scale,
-        "z_peak": peak / scale,
-    }
+    ready = valid & np.isfinite(fast) & np.isfinite(medium) & np.isfinite(upper_30m) & np.isfinite(slow_60m) & np.isfinite(slow_3h) & np.isfinite(peak) & np.isfinite(scale)
+    return {"valid": valid, "ready": ready, "fast": fast, "medium": medium, "upper_30m": upper_30m, "slow_60m": slow_60m, "slow_3h": slow_3h, "peak": peak, "scale": scale, "z_fast": fast / scale, "z_medium": medium / scale, "z_slow": slow_60m / scale, "z_peak": peak / scale}
 
 
 def _causal_anomaly_mask(x: np.ndarray, cadence_s: float) -> Tuple[np.ndarray, np.ndarray]:
@@ -232,18 +199,7 @@ def _causal_anomaly_mask(x: np.ndarray, cadence_s: float) -> Tuple[np.ndarray, n
     return anomaly, threshold
 
 
-def detect_activity_masks(
-    residual: np.ndarray,
-    cadence_s: float = 60.0,
-    active_threshold: Optional[float] = None,
-    storm_threshold: Optional[float] = None,
-    unsettled_threshold: Optional[float] = None,
-    major_threshold: Optional[float] = None,
-    severe_threshold: Optional[float] = None,
-    profile: Optional[DetectorProfile] = None,
-    *,
-    include_anomaly: bool = True,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
+def detect_activity_masks(residual: np.ndarray, cadence_s: float = 60.0, active_threshold: Optional[float] = None, storm_threshold: Optional[float] = None, unsettled_threshold: Optional[float] = None, major_threshold: Optional[float] = None, severe_threshold: Optional[float] = None, profile: Optional[DetectorProfile] = None, *, include_anomaly: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
     """Return strictly causal activity/severity masks and diagnostics."""
     p = profile or load_detector_profile()
     active_threshold = p.active_nt if active_threshold is None else float(active_threshold)
@@ -251,7 +207,6 @@ def detect_activity_masks(
     unsettled_threshold = p.unsettled_nt if unsettled_threshold is None else float(unsettled_threshold)
     major_threshold = p.major_nt if major_threshold is None else float(major_threshold)
     severe_threshold = p.severe_nt if severe_threshold is None else float(severe_threshold)
-
     x = np.asarray(residual, dtype=float)
     if x.ndim != 1:
         raise ValueError("residual must be one-dimensional")
@@ -259,151 +214,24 @@ def detect_activity_masks(
         raise ValueError("cadence_s must be positive and finite")
     if not (0 < unsettled_threshold <= active_threshold < storm_threshold <= major_threshold <= severe_threshold):
         raise ValueError("thresholds must satisfy unsettled <= active < storm <= major <= severe")
-
     f = _causal_robust_features(x, cadence_s, p)
     valid = f["valid"]
     ready = f["ready"]
-
-    # Absolute disturbance is mandatory. Local normalization only strengthens
-    # evidence for short/fast excursions; it never creates an alert by itself.
-    active_evidence = ready & (
-        (f["medium"] >= active_threshold)
-        | (
-            (f["fast"] >= active_threshold)
-            & (f["medium"] >= 0.80 * active_threshold)
-            & (f["z_fast"] >= p.active_z)
-        )
-        | (
-            (f["peak"] >= 1.10 * active_threshold)
-            & (f["medium"] >= 0.70 * active_threshold)
-            & (f["z_peak"] >= p.active_z)
-        )
-    )
-
-    storm_evidence = ready & (
-        (f["medium"] >= storm_threshold)
-        | (
-            (f["slow_60m"] >= storm_threshold)
-            & (f["medium"] >= 0.80 * storm_threshold)
-        )
-        | (
-            (f["fast"] >= storm_threshold)
-            & (f["medium"] >= 0.80 * storm_threshold)
-            & (f["z_fast"] >= p.storm_z)
-        )
-        | (
-            (f["peak"] >= 1.10 * storm_threshold)
-            & (f["medium"] >= 0.70 * storm_threshold)
-            & (f["z_peak"] >= p.storm_z)
-        )
-    )
-
-    active = _hysteresis_mask(
-        active_evidence,
-        ready & (f["medium"] <= 0.55 * active_threshold),
-        _window(p.active_on_minutes * 60, cadence_s),
-        _window(p.active_off_minutes * 60, cadence_s),
-        ready,
-    )
-    storm = _hysteresis_mask(
-        storm_evidence,
-        ready & (f["medium"] <= 0.60 * storm_threshold),
-        _window(p.storm_on_minutes * 60, cadence_s),
-        _window(p.storm_off_minutes * 60, cadence_s),
-        ready,
-    )
-
-    major_evidence = ready & (
-        (f["medium"] >= major_threshold)
-        | ((f["upper_30m"] >= 0.90 * major_threshold) & (f["medium"] >= 0.70 * major_threshold))
-        | ((f["peak"] >= major_threshold) & (f["medium"] >= 0.60 * major_threshold))
-    )
-    severe_evidence = ready & (
-        (f["medium"] >= severe_threshold)
-        | ((f["upper_30m"] >= 0.90 * severe_threshold) & (f["medium"] >= 0.70 * severe_threshold))
-        | ((f["peak"] >= severe_threshold) & (f["medium"] >= 0.60 * severe_threshold))
-    )
-    major = _hysteresis_mask(
-        major_evidence,
-        ready & (f["medium"] <= 0.70 * major_threshold),
-        _window(10 * 60, cadence_s),
-        _window(30 * 60, cadence_s),
-        ready,
-    ) & storm
-    severe = _hysteresis_mask(
-        severe_evidence,
-        ready & (f["medium"] <= 0.70 * severe_threshold),
-        _window(10 * 60, cadence_s),
-        _window(30 * 60, cadence_s),
-        ready,
-    ) & major
-
+    active_evidence = ready & ((f["medium"] >= active_threshold) | ((f["fast"] >= active_threshold) & (f["medium"] >= 0.80 * active_threshold) & (f["z_fast"] >= p.active_z)) | ((f["peak"] >= 1.10 * active_threshold) & (f["medium"] >= 0.70 * active_threshold) & (f["z_peak"] >= p.active_z)))
+    storm_evidence = ready & ((f["medium"] >= storm_threshold) | ((f["slow_60m"] >= storm_threshold) & (f["medium"] >= 0.80 * storm_threshold)) | ((f["fast"] >= storm_threshold) & (f["medium"] >= 0.80 * storm_threshold) & (f["z_fast"] >= p.storm_z)) | ((f["peak"] >= 1.10 * storm_threshold) & (f["medium"] >= 0.70 * storm_threshold) & (f["z_peak"] >= p.storm_z)))
+    active = _hysteresis_mask(active_evidence, ready & (f["medium"] <= 0.55 * active_threshold), _window(p.active_on_minutes * 60, cadence_s), _window(p.active_off_minutes * 60, cadence_s), ready)
+    storm = _hysteresis_mask(storm_evidence, ready & (f["medium"] <= 0.60 * storm_threshold), _window(p.storm_on_minutes * 60, cadence_s), _window(p.storm_off_minutes * 60, cadence_s), ready)
+    major_evidence = ready & ((f["medium"] >= major_threshold) | ((f["upper_30m"] >= 0.90 * major_threshold) & (f["medium"] >= 0.70 * major_threshold)) | ((f["peak"] >= major_threshold) & (f["medium"] >= 0.60 * major_threshold)))
+    severe_evidence = ready & ((f["medium"] >= severe_threshold) | ((f["upper_30m"] >= 0.90 * severe_threshold) & (f["medium"] >= 0.70 * severe_threshold)) | ((f["peak"] >= severe_threshold) & (f["medium"] >= 0.60 * severe_threshold)))
+    major = _hysteresis_mask(major_evidence, ready & (f["medium"] <= 0.70 * major_threshold), _window(10 * 60, cadence_s), _window(30 * 60, cadence_s), ready) & storm
+    severe = _hysteresis_mask(severe_evidence, ready & (f["medium"] <= 0.70 * severe_threshold), _window(10 * 60, cadence_s), _window(30 * 60, cadence_s), ready) & major
     active &= valid & ready
     storm &= valid & ready
     major &= valid & ready
     severe &= valid & ready
-
-    diagnostics: Dict[str, object] = {
-        "detector_version": DETECTOR_VERSION,
-        "fast_5m_nt": f["fast"],
-        "medium_15m_nt": f["medium"],
-        "upper_30m_p75_nt": f["upper_30m"],
-        "slow_60m_nt": f["slow_60m"],
-        "slow_3h_nt": f["slow_3h"],
-        "peak_window_nt": f["peak"],
-        "local_scale_nt": f["scale"],
-        "z_fast": f["z_fast"],
-        "z_medium": f["z_medium"],
-        "z_slow": f["z_slow"],
-        "z_peak": f["z_peak"],
-        "active_evidence": active_evidence,
-        "storm_evidence": storm_evidence,
-        "history_ready": ready,
-        "invalid_input": ~valid,
-        "warmup_samples": int(np.argmax(ready)) if np.any(ready) else int(x.size),
-        "unsettled_threshold_nt": np.full(x.size, unsettled_threshold, dtype=float),
-    }
+    diagnostics: Dict[str, object] = {"detector_version": DETECTOR_VERSION, "fast_5m_nt": f["fast"], "medium_15m_nt": f["medium"], "upper_30m_p75_nt": f["upper_30m"], "slow_60m_nt": f["slow_60m"], "slow_3h_nt": f["slow_3h"], "peak_nt": f["peak"], "local_scale_nt": f["scale"], "z_fast": f["z_fast"], "z_medium": f["z_medium"], "z_slow": f["z_slow"], "z_peak": f["z_peak"], "ready": ready}
     if include_anomaly:
         anomaly, anomaly_threshold = _causal_anomaly_mask(x, cadence_s)
-        diagnostics["anomaly"] = anomaly & valid
+        diagnostics["anomaly"] = anomaly
         diagnostics["anomaly_threshold_nt"] = anomaly_threshold
     return active, storm, major, severe, diagnostics
-
-
-def flag_activity(
-    residual: np.ndarray,
-    cadence_s: float = 60.0,
-    active_threshold: Optional[float] = None,
-    storm_threshold: Optional[float] = None,
-    unsettled_threshold: Optional[float] = None,
-    major_threshold: Optional[float] = None,
-    severe_threshold: Optional[float] = None,
-    profile: Optional[DetectorProfile] = None,
-) -> np.ndarray:
-    """Classify residuals using the certified detector profile."""
-    x = np.asarray(residual, dtype=float)
-    p = profile or load_detector_profile()
-    active, storm, major, severe, diagnostics = detect_activity_masks(
-        x,
-        cadence_s=cadence_s,
-        active_threshold=active_threshold,
-        storm_threshold=storm_threshold,
-        unsettled_threshold=unsettled_threshold,
-        major_threshold=major_threshold,
-        severe_threshold=severe_threshold,
-        profile=p,
-        include_anomaly=True,
-    )
-    medium = np.asarray(diagnostics["medium_15m_nt"], dtype=float)
-    ready = np.asarray(diagnostics["history_ready"], dtype=bool)
-    unsettled = p.unsettled_nt if unsettled_threshold is None else float(unsettled_threshold)
-    flags = np.full(x.size, "quiet", dtype=object)
-    flags[ready & (medium >= unsettled)] = "unsettled"
-    flags[active] = "active"
-    flags[storm] = "minor_storm"
-    flags[major] = "major_storm"
-    flags[severe] = "severe_storm"
-    anomaly = np.asarray(diagnostics.get("anomaly", np.zeros(x.size, dtype=bool)))
-    flags[anomaly & ready & ~active & ~storm] = "anomaly"
-    flags[~np.isfinite(x)] = "quiet"
-    return flags
