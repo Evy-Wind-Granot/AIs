@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from scipy import linalg
 
-BASELINE_VERSION = "robust-harmonic-overlap-v1"
+BASELINE_VERSION = "robust-harmonic-overlap-v2"
 HARMONIC_PERIOD_HOURS = (24.0, 12.0, 8.0, 6.0)
 
 
@@ -120,7 +120,12 @@ def compute_causal_qdc_baseline(
     update_minutes: float | None = None,
     min_history_fraction: float = 0.50,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Return strictly-causal quiet-day baseline and residual."""
+    """Return strictly-causal quiet-day baseline and residual.
+
+    When update_minutes is omitted, refit every hour rather than projecting a
+    24-hour quadratic/harmonic fit across a full future day. This sharply
+    reduces causal extrapolation drift while keeping the baseline deterministic.
+    """
     values = np.asarray(x, dtype=float)
     if values.ndim != 1:
         raise ValueError("x must be one-dimensional")
@@ -129,9 +134,10 @@ def compute_causal_qdc_baseline(
     if values.size == 0:
         return values.copy(), values.copy()
 
-    stride_fraction = 0.5
-    if update_minutes is not None:
-        stride_fraction = max(1.0 / max(1.0, fit_window_hours * 60.0), float(update_minutes) / (fit_window_hours * 60.0))
+    stride_fraction = 1.0 / 24.0 if update_minutes is None else max(
+        1.0 / max(1.0, fit_window_hours * 60.0),
+        float(update_minutes) / (fit_window_hours * 60.0),
+    )
     cfg = HarmonicFitConfig(
         fit_window_hours=fit_window_hours,
         stride_fraction=min(max(stride_fraction, 1.0 / 24.0), 1.0),
@@ -160,7 +166,10 @@ def compute_causal_qdc_baseline(
         if storm_fraction <= cfg.storm_lock_fraction:
             last_quiet_quadratic = coeff[:3].copy()
 
-        predict_end = min(n, predict_start + window)
+        # Only project the fit over the next update interval. The previous
+        # implementation projected a 24-hour fit for 24 hours, allowing the
+        # quadratic trend to drift far outside the observed range.
+        predict_end = min(n, predict_start + stride)
         target_t = t_hours[predict_start:predict_end]
         design = build_design_matrix(target_t, float(hist_t[0]), float(hist_t[-1]))
         prediction = design @ coeff
