@@ -2,7 +2,7 @@
 """Deterministic, strictly-causal production magnetometer detector.
 
 The detector deliberately prefers coherent multi-timescale evidence over a
-single threshold crossing.  All statistics are trailing-only; invalid data
+single threshold crossing. All statistics are trailing-only; invalid data
 resets state; onset and release are independently persistent.
 """
 from __future__ import annotations
@@ -163,33 +163,17 @@ def _causal_anomaly_mask(x: np.ndarray, cadence_s: float) -> Tuple[np.ndarray, f
     return anomaly, median_threshold, threshold
 
 def _active_evidence(fast, medium, upper, slow, slow3, peak, p: DetectorProfile, threshold: float, ready: np.ndarray) -> np.ndarray:
-    """Require coherent evidence from at least two independent time scales.
-
-    A single slow/peak threshold crossing is intentionally insufficient: this
-    is the main false-alarm control for the active class.
-    """
-    sustained = (medium >= threshold) & (
-        (slow >= p.active_slow_ratio * threshold)
-        | (slow3 >= p.active_slow_3h_ratio * threshold)
-        | (upper >= p.active_upper_ratio * threshold)
-    )
+    """Require coherent evidence from at least two independent time scales."""
+    sustained = (medium >= threshold) & ((slow >= p.active_slow_ratio * threshold) | (slow3 >= p.active_slow_3h_ratio * threshold) | (upper >= p.active_upper_ratio * threshold))
     fast_confirmed = (fast >= p.active_fast_ratio * threshold) & (medium >= p.active_medium_slow_ratio * threshold)
     peak_confirmed = (peak >= p.active_peak_ratio * threshold) & (medium >= p.active_peak_medium_ratio * threshold)
-    # Strong short/peak evidence can initiate an event, but only with a
-    # non-trivial medium-timescale response; weak long-window evidence alone
-    # never initiates activity.
     return ready & (sustained | fast_confirmed | peak_confirmed)
 
 def _storm_evidence(fast, medium, upper, slow, slow3, peak, p: DetectorProfile, threshold: float, ready: np.ndarray) -> np.ndarray:
-    sustained = (medium >= threshold) & (
-        (slow >= p.storm_medium_ratio * threshold)
-        | (slow3 >= p.storm_medium_ratio * threshold)
-    )
+    sustained = (medium >= threshold) & ((slow >= p.storm_medium_ratio * threshold) | (slow3 >= p.storm_medium_ratio * threshold))
     strong_short = (fast >= p.storm_fast_ratio * threshold) & (medium >= p.storm_fast_medium_ratio * threshold)
     strong_peak = (peak >= p.storm_peak_ratio * threshold) & (medium >= p.storm_peak_medium_ratio * threshold)
     strong_30m = (upper >= p.storm_upper_ratio * threshold) & (medium >= p.storm_upper_medium_ratio * threshold)
-    # Storm onset requires either sustained multi-hour evidence or two strong
-    # independent short/upper signals. This suppresses isolated local spikes.
     strong_count = strong_short.astype(np.int8) + strong_peak.astype(np.int8) + strong_30m.astype(np.int8)
     return ready & (sustained | (strong_count >= 2))
 
@@ -220,12 +204,20 @@ def detect_activity_masks(residual: np.ndarray, cadence_s: float = 60.0,
     for arr in (fast, medium, upper, slow, slow3, peak): arr[~np.isfinite(arr)] = 0.0
     active_evidence = _active_evidence(fast, medium, upper, slow, slow3, peak, p, active_threshold, ready)
     storm_evidence = _storm_evidence(fast, medium, upper, slow, slow3, peak, p, storm_threshold, ready)
-    active = _hysteresis_mask(active_evidence, ready & (medium <= 0.70*active_threshold), _window(p.active_on_minutes*60, cadence_s), _window(p.active_off_minutes*60, cadence_s), ready)
-    storm = _hysteresis_mask(storm_evidence, ready & (medium <= p.storm_release_ratio*storm_threshold), _window(p.storm_on_minutes*60, cadence_s), _window(p.storm_off_minutes*60, cadence_s), ready)
+    # Release must not latch indefinitely in the hysteresis dead-band. Once the
+    # coherent evidence disappears, require the configured persistence period
+    # to elapse before releasing. The lower threshold remains an immediate
+    # strong-release path.
+    active_off = ready & (~active_evidence | (medium <= 0.70 * active_threshold))
+    storm_off = ready & (~storm_evidence | (medium <= p.storm_release_ratio * storm_threshold))
+    active = _hysteresis_mask(active_evidence, active_off, _window(p.active_on_minutes*60, cadence_s), _window(p.active_off_minutes*60, cadence_s), ready)
+    storm = _hysteresis_mask(storm_evidence, storm_off, _window(p.storm_on_minutes*60, cadence_s), _window(p.storm_off_minutes*60, cadence_s), ready)
     major_evidence = ready & ((medium >= major_threshold) | ((upper >= p.major_upper_ratio*major_threshold) & (medium >= p.major_medium_ratio*major_threshold)) | ((peak >= p.major_fast_ratio*major_threshold) & (medium >= p.major_medium_ratio*major_threshold)))
     severe_evidence = ready & ((medium >= severe_threshold) | ((upper >= p.severe_upper_ratio*severe_threshold) & (medium >= p.severe_medium_ratio*severe_threshold)) | ((peak >= p.severe_fast_ratio*severe_threshold) & (medium >= p.severe_medium_ratio*severe_threshold)))
-    major = _hysteresis_mask(major_evidence, ready & (medium <= 0.75*major_threshold), _window(10*60, cadence_s), _window(30*60, cadence_s), ready) & storm
-    severe = _hysteresis_mask(severe_evidence, ready & (medium <= 0.75*severe_threshold), _window(10*60, cadence_s), _window(30*60, cadence_s), ready) & major
+    major_off = ready & (~major_evidence | (medium <= 0.75 * major_threshold))
+    severe_off = ready & (~severe_evidence | (medium <= 0.75 * severe_threshold))
+    major = _hysteresis_mask(major_evidence, major_off, _window(10*60, cadence_s), _window(30*60, cadence_s), ready) & storm
+    severe = _hysteresis_mask(severe_evidence, severe_off, _window(10*60, cadence_s), _window(30*60, cadence_s), ready) & major
     diagnostics: Dict[str, object] = {
         "fast_5m_nt": fast, "medium_15m_nt": medium, "upper_30m_p75_nt": upper,
         "slow_60m_nt": slow, "slow_3h_nt": slow3, "peak_window_nt": peak,
