@@ -7,7 +7,7 @@ from .. import production_grade_validation as pg
 pg.pm.compute_qdc_baseline = causal_baseline.compute_causal_qdc_baseline
 pg.DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "case_cache_causal_v8"
 
-from ..production_release_gate_v5 import main  # noqa: E402
+from ..production_release_gate_v6 import main  # noqa: E402
 
 if __name__ == "__main__":
     main()
