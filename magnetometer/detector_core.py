@@ -44,7 +44,6 @@ class DetectorProfile:
     unsettled_nt: float = DEFAULT_UNSETTLED_NT
     major_nt: float = DEFAULT_MAJOR_STORM_NT
     severe_nt: float = DEFAULT_SEVERE_STORM_NT
-
     active_z: float = DEFAULT_ACTIVE_Z
     storm_z: float = DEFAULT_STORM_Z
     noise_floor_nt: float = DEFAULT_NOISE_FLOOR_NT
@@ -53,7 +52,6 @@ class DetectorProfile:
     storm_on_minutes: float = DEFAULT_STORM_ON_MINUTES
     storm_off_minutes: float = DEFAULT_STORM_OFF_MINUTES
     peak_window_minutes: float = DEFAULT_PEAK_WINDOW_MINUTES
-
     active_slow_ratio: float = 0.65
     active_slow_3h_ratio: float = 0.55
     active_upper_ratio: float = 1.0
@@ -229,9 +227,39 @@ def detect_activity_masks(residual: np.ndarray, cadence_s: float = 60.0, active_
     storm &= valid & ready
     major &= valid & ready
     severe &= valid & ready
-    diagnostics: Dict[str, object] = {"detector_version": DETECTOR_VERSION, "fast_5m_nt": f["fast"], "medium_15m_nt": f["medium"], "upper_30m_p75_nt": f["upper_30m"], "slow_60m_nt": f["slow_60m"], "slow_3h_nt": f["slow_3h"], "peak_nt": f["peak"], "local_scale_nt": f["scale"], "z_fast": f["z_fast"], "z_medium": f["z_medium"], "z_slow": f["z_slow"], "z_peak": f["z_peak"], "ready": ready}
+    diagnostics: Dict[str, object] = {"detector_version": DETECTOR_VERSION, "fast_5m_nt": f["fast"], "medium_15m_nt": f["medium"], "upper_30m_p75_nt": f["upper_30m"], "slow_60m_nt": f["slow_60m"], "slow_3h_nt": f["slow_3h"], "peak_nt": f["peak"], "local_scale_nt": f["scale"], "z_fast": f["z_fast"], "z_medium": f["z_medium"], "z_slow": f["z_slow"], "z_peak": f["z_peak"], "ready": ready, "history_ready": ready, "invalid_input": ~valid, "warmup_samples": int(np.argmax(ready)) if np.any(ready) else int(x.size)}
     if include_anomaly:
         anomaly, anomaly_threshold = _causal_anomaly_mask(x, cadence_s)
-        diagnostics["anomaly"] = anomaly
+        diagnostics["anomaly"] = anomaly & valid
         diagnostics["anomaly_threshold_nt"] = anomaly_threshold
     return active, storm, major, severe, diagnostics
+
+
+def flag_activity(residual: np.ndarray, cadence_s: float = 60.0, active_threshold: Optional[float] = None, storm_threshold: Optional[float] = None, unsettled_threshold: Optional[float] = None, major_threshold: Optional[float] = None, severe_threshold: Optional[float] = None, profile: Optional[DetectorProfile] = None) -> np.ndarray:
+    """Return the canonical string activity classification for each sample."""
+    x = np.asarray(residual, dtype=float)
+    p = profile or load_detector_profile()
+    active, storm, major, severe, diagnostics = detect_activity_masks(
+        x,
+        cadence_s=cadence_s,
+        active_threshold=active_threshold,
+        storm_threshold=storm_threshold,
+        unsettled_threshold=unsettled_threshold,
+        major_threshold=major_threshold,
+        severe_threshold=severe_threshold,
+        profile=p,
+        include_anomaly=True,
+    )
+    medium = diagnostics["medium_15m_nt"]
+    ready = diagnostics["history_ready"]
+    unsettled = p.unsettled_nt if unsettled_threshold is None else float(unsettled_threshold)
+    flags = np.full(x.size, "quiet", dtype=object)
+    flags[ready & (medium >= unsettled)] = "unsettled"
+    flags[active] = "active"
+    flags[storm] = "minor_storm"
+    flags[major] = "major_storm"
+    flags[severe] = "severe_storm"
+    anomaly = diagnostics.get("anomaly", np.zeros(x.size, dtype=bool))
+    flags[np.asarray(anomaly, dtype=bool) & ready & ~active & ~storm] = "anomaly"
+    flags[~np.isfinite(x)] = "quiet"
+    return flags
