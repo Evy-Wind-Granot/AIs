@@ -1,49 +1,37 @@
-"""Station-local event benchmark.
+"""Station-local event reference independent of Kp/Dst and detector settings.
 
-This benchmark deliberately does not use Kp or Dst as labels.  It constructs a
-local reference event series from independent physical signatures in the
-magnetometer residual: sustained amplitude, first-difference rate, and
-persistence.  The reference is frozen before detector evaluation and is useful
-for measuring local sensitivity, false events, latency, and event duration.
+This is a local *reference*, not an absolute physical ground truth: the only
+observations used are the station's own magnetic residual.  It intentionally
+uses multi-scale disturbance energy and a frozen percentile rule rather than
+the adaptive detector's pointwise sigma thresholds.  That makes it useful for
+honest detector development without pretending that global Kp is local truth.
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Tuple
 import numpy as np
+import pandas as pd
 
 
 @dataclass(frozen=True)
 class LocalReferenceConfig:
-    amplitude_sigma: float = 6.0
-    derivative_sigma: float = 6.0
+    short_minutes: float = 15.0
+    long_minutes: float = 180.0
+    short_percentile: float = 99.0
+    long_percentile: float = 99.5
+    derivative_percentile: float = 99.0
     persistence_minutes: float = 10.0
-    merge_gap_minutes: float = 20.0
+    merge_gap_minutes: float = 30.0
     min_event_minutes: float = 10.0
-
-
-def _sigma(x: np.ndarray) -> float:
-    x = np.asarray(x, dtype=float)
-    x = x[np.isfinite(x)]
-    if len(x) < 10:
-        return 1.0
-    med = np.median(x)
-    mad = np.median(np.abs(x - med))
-    s = 1.4826 * mad
-    return float(max(s if np.isfinite(s) else 0.0, np.std(x), 1e-6))
-
-
-def _local_noise(x: np.ndarray) -> float:
-    x = np.asarray(x, dtype=float)
-    x = x[np.isfinite(x)]
-    med = np.median(x)
-    a = np.abs(x - med)
-    q = np.quantile(a, 0.50)
-    return _sigma(x[a <= q])
+    quiet_baseline_quantile: float = 0.40
 
 
 def _runs(mask: np.ndarray) -> List[Tuple[int, int]]:
-    p = np.concatenate(([False], np.asarray(mask, dtype=bool), [False]))
+    x = np.asarray(mask, dtype=bool)
+    if not len(x):
+        return []
+    p = np.concatenate(([False], x, [False]))
     s = np.flatnonzero(~p[:-1] & p[1:])
     e = np.flatnonzero(p[:-1] & ~p[1:])
     return list(zip(s.tolist(), e.tolist()))
@@ -59,51 +47,127 @@ def _merge(runs: List[Tuple[int, int]], gap: int) -> List[Tuple[int, int]]:
     return out
 
 
+def _robust_sigma(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=float)
+    x = x[np.isfinite(x)]
+    if len(x) < 10:
+        return 1.0
+    med = np.median(x)
+    mad = np.median(np.abs(x - med))
+    s = 1.4826 * mad
+    if not np.isfinite(s) or s <= 1e-9:
+        s = np.std(x)
+    return max(float(s), 1e-6)
+
+
+def _quiet_scale(x: np.ndarray, q: float) -> float:
+    x = np.asarray(x, dtype=float)
+    finite = x[np.isfinite(x)]
+    if len(finite) < 20:
+        return 1.0
+    med = np.median(finite)
+    a = np.abs(finite - med)
+    cutoff = np.quantile(a, np.clip(q, 0.1, 0.8))
+    return _robust_sigma(finite[a <= cutoff])
+
+
 def build_local_reference(
     residual: np.ndarray,
     cadence_s: float = 60.0,
     config: LocalReferenceConfig | None = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """Build a local binary event reference and auditable diagnostics."""
+    """Build a frozen local event reference from multi-scale disturbance energy."""
     cfg = config or LocalReferenceConfig()
     r = np.asarray(residual, dtype=float)
-    sigma = _local_noise(r)
-    d = np.diff(r, prepend=r[0])
-    dsigma = _sigma(d)
-    amp = np.abs(r) / sigma
-    rate = np.abs(d) / dsigma
+    n = len(r)
+    if n == 0:
+        return np.empty(0, dtype=bool), {"config": asdict(cfg), "event_count": 0}
 
-    candidate = (amp >= cfg.amplitude_sigma) & (rate >= cfg.derivative_sigma / 2.0)
-    persistence = max(1, int(round(cfg.persistence_minutes * 60 / cadence_s)))
+    finite = np.isfinite(r)
+    if not finite.all():
+        good = np.flatnonzero(finite)
+        if len(good) < 2:
+            return np.zeros(n, dtype=bool), {"config": asdict(cfg), "event_count": 0}
+        r = np.interp(np.arange(n), good, r[good])
+
+    # Remove only a robust station-wide center. The reference is not derived
+    # from the detector's rolling thresholds or state machine.
+    center = float(np.median(r))
+    centered = r - center
+    quiet_sigma = _quiet_scale(centered, cfg.quiet_baseline_quantile)
+
+    short_n = max(3, int(round(cfg.short_minutes * 60.0 / cadence_s)))
+    long_n = max(short_n + 1, int(round(cfg.long_minutes * 60.0 / cadence_s)))
+
+    s = pd.Series(centered)
+    # Rolling RMS is a measure of disturbance energy; rolling range captures
+    # large excursions even when their mean is near zero.
+    short_rms = np.sqrt(s.pow(2).rolling(short_n, min_periods=max(3, short_n // 3)).mean())
+    short_range = s.rolling(short_n, min_periods=max(3, short_n // 3)).max() - s.rolling(short_n, min_periods=max(3, short_n // 3)).min()
+    long_range = s.rolling(long_n, min_periods=max(short_n, long_n // 3)).max() - s.rolling(long_n, min_periods=max(short_n, long_n // 3)).min()
+
+    diff = np.diff(r, prepend=r[0]) / max(cadence_s, 1.0)
+    d = pd.Series(np.abs(diff))
+    derivative_rms = np.sqrt(d.pow(2).rolling(short_n, min_periods=max(3, short_n // 3)).mean())
+
+    valid_short = short_rms.to_numpy(float)
+    valid_range = short_range.to_numpy(float)
+    valid_long = long_range.to_numpy(float)
+    valid_deriv = derivative_rms.to_numpy(float)
+
+    def finite_percentile(a: np.ndarray, q: float) -> float:
+        a = a[np.isfinite(a)]
+        return float(np.percentile(a, q)) if len(a) else float("inf")
+
+    short_thr = max(finite_percentile(valid_short, cfg.short_percentile), quiet_sigma * 3.0)
+    range_thr = max(finite_percentile(valid_range, cfg.short_percentile), quiet_sigma * 6.0)
+    long_thr = max(finite_percentile(valid_long, cfg.long_percentile), quiet_sigma * 12.0)
+    deriv_thr = max(finite_percentile(valid_deriv, cfg.derivative_percentile), _robust_sigma(diff) * 3.0)
+
+    # Two independent local signatures are required. This is deliberately
+    # harder to satisfy than the detector's OR-based onset rule.
+    candidate = (
+        ((valid_short >= short_thr) & (valid_range >= range_thr))
+        | ((valid_long >= long_thr) & (valid_deriv >= deriv_thr))
+    )
+    candidate &= np.isfinite(valid_short) & np.isfinite(valid_long)
+
+    persistence_n = max(1, int(round(cfg.persistence_minutes * 60 / cadence_s)))
     min_n = max(1, int(round(cfg.min_event_minutes * 60 / cadence_s)))
     gap_n = max(0, int(round(cfg.merge_gap_minutes * 60 / cadence_s)))
 
-    persistent = np.zeros(len(r), dtype=bool)
-    for s, e in _runs(candidate):
-        if e - s >= persistence:
-            persistent[s:e] = True
+    persistent = np.zeros(n, dtype=bool)
+    for start, end in _runs(candidate):
+        if end - start >= persistence_n:
+            persistent[start:end] = True
 
     events = _merge(_runs(persistent), gap_n)
-    reference = np.zeros(len(r), dtype=bool)
-    kept = []
-    for s, e in events:
-        if e - s >= min_n:
-            reference[s:e] = True
-            kept.append((s, e))
+    reference = np.zeros(n, dtype=bool)
+    kept: List[Tuple[int, int]] = []
+    for start, end in events:
+        if end - start >= min_n:
+            reference[start:end] = True
+            kept.append((start, end))
 
-    # Severity is local and continuous; this is not a Kp-derived class.
-    severity = np.zeros(len(r), dtype=np.int8)
-    severity[reference & (amp >= 6)] = 1
-    severity[reference & (amp >= 12)] = 2
-    severity[reference & (amp >= 20)] = 3
-    severity[reference & (amp >= 40)] = 4
+    # Local severity is based on the long-window range relative to the local
+    # quiet scale, not on Kp labels.
+    severity = np.zeros(n, dtype=np.int8)
+    long_z = valid_long / max(quiet_sigma, 1e-6)
+    severity[reference & (long_z >= 12)] = 1
+    severity[reference & (long_z >= 20)] = 2
+    severity[reference & (long_z >= 35)] = 3
+    severity[reference & (long_z >= 60)] = 4
 
     return reference, {
         "config": asdict(cfg),
-        "noise_sigma_nt": float(sigma),
-        "derivative_sigma_nt_per_sample": float(dsigma),
+        "reference_definition": "local multi-scale disturbance energy; no Kp/Dst",
+        "quiet_sigma_nt": float(quiet_sigma),
+        "short_rms_threshold_nt": float(short_thr),
+        "short_range_threshold_nt": float(range_thr),
+        "long_range_threshold_nt": float(long_thr),
+        "derivative_rms_threshold_nt_per_s": float(deriv_thr),
         "event_count": len(kept),
-        "event_durations_minutes": [round((e - s) * cadence_s / 60, 2) for s, e in kept],
+        "event_durations_minutes": [round((e - s) * cadence_s / 60.0, 2) for s, e in kept],
         "severity_counts": {str(i): int(np.sum(severity == i)) for i in range(5)},
     }
 
@@ -114,11 +178,11 @@ def compare_events(
     cadence_s: float = 60.0,
     tolerance_minutes: float = 30.0,
 ) -> Dict[str, Any]:
-    """Event-level precision/recall with one-to-one matching and latency."""
+    """Event-level one-to-one matching with latency and false-event rate."""
     rr = _runs(reference)
     pp = _runs(prediction)
     tol = int(round(tolerance_minutes * 60 / cadence_s))
-    used = set(); latencies = []; matches = 0
+    used = set(); latencies: List[float] = []; matches = 0
     for rs, re in rr:
         candidates = []
         for j, (ps, pe) in enumerate(pp):
@@ -135,12 +199,17 @@ def compare_events(
     precision = matches / len(pp) if pp else 0.0
     recall = matches / len(rr) if rr else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    days = max(len(reference) * cadence_s / 86400.0, 1e-9)
     return {
-        "reference_events": len(rr), "predicted_events": len(pp),
-        "matched_events": matches, "missed_events": len(rr) - matches,
+        "reference_events": len(rr),
+        "predicted_events": len(pp),
+        "matched_events": matches,
+        "missed_events": len(rr) - matches,
         "false_positive_events": len(pp) - matches,
-        "precision": precision, "recall": recall, "f1": f1,
-        "false_events_per_day": (len(pp) - matches) / max(len(reference) * cadence_s / 86400, 1e-9),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "false_events_per_day": (len(pp) - matches) / days,
         "mean_latency_minutes": float(np.mean(latencies)) if latencies else None,
         "median_latency_minutes": float(np.median(latencies)) if latencies else None,
         "max_latency_minutes": float(np.max(latencies)) if latencies else None,
