@@ -1,38 +1,25 @@
-"""Station-local adaptive event detector independent of Kp/Dst.
-
-The detector is deliberately local: it estimates a quiet noise floor from the
-residual itself, uses rolling robust scale for changing station conditions,
-and applies hysteresis/persistence so individual spikes do not become events.
-Kp and Dst are not inputs to detection.
-"""
+"""Station-local adaptive event detector independent of Kp/Dst."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Tuple
 import numpy as np
+import pandas as pd
 
 
 @dataclass(frozen=True)
 class AdaptiveConfig:
-    # Pointwise entry/exit levels in units of local robust sigma.
     onset_sigma: float = 6.0
     active_sigma: float = 10.0
     storm_sigma: float = 18.0
     major_sigma: float = 30.0
     severe_sigma: float = 55.0
     clear_sigma: float = 3.0
-
-    # Independent derivative trigger, in robust sigma of d(residual)/dt.
     derivative_onset_sigma: float = 7.0
     derivative_clear_sigma: float = 3.5
-
-    # Adaptive scale windows. The quiet floor prevents the rolling scale from
-    # inflating indefinitely during a long storm.
     rolling_scale_minutes: float = 180.0
     quiet_scale_quantile: float = 0.35
     max_scale_multiplier: float = 3.0
-
-    # Temporal logic.
     onset_minutes: float = 5.0
     clear_minutes: float = 10.0
     min_event_minutes: float = 10.0
@@ -53,40 +40,29 @@ def _robust_sigma(x: np.ndarray) -> float:
     return max(float(sigma), 1e-6)
 
 
-def _quiet_floor(residual: np.ndarray, quantile: float) -> float:
-    r = np.asarray(residual, dtype=float)
-    finite = r[np.isfinite(r)]
+def _quiet_floor(x: np.ndarray, quantile: float) -> float:
+    x = np.asarray(x, dtype=float)
+    finite = x[np.isfinite(x)]
     if finite.size < 20:
         return 1.0
     med = float(np.median(finite))
     amp = np.abs(finite - med)
     cutoff = float(np.quantile(amp, np.clip(quantile, 0.05, 0.8)))
-    quiet = finite[amp <= cutoff]
-    return _robust_sigma(quiet)
+    return _robust_sigma(finite[amp <= cutoff])
 
 
-def _rolling_mad_scale(x: np.ndarray, window: int, floor: float, cap: float) -> np.ndarray:
-    """Compute a causal rolling robust scale without pandas dependencies."""
-    x = np.asarray(x, dtype=float)
-    n = len(x)
-    out = np.empty(n, dtype=float)
-    half = max(2, window // 2)
-    # A strided implementation is unnecessary for the minute cadence sizes
-    # used here; this is intentionally simple and auditable.
-    for i in range(n):
-        s = max(0, i - half + 1)
-        w = x[s : i + 1]
-        w = w[np.isfinite(w)]
-        if w.size < 10:
-            out[i] = floor
-            continue
-        med = np.median(w)
-        mad = np.median(np.abs(w - med))
-        sigma = 1.4826 * mad
-        if not np.isfinite(sigma) or sigma <= 1e-9:
-            sigma = np.std(w)
-        out[i] = np.clip(float(sigma), floor, cap)
-    return out
+def _rolling_robust_scale(x: np.ndarray, window: int, floor: float, cap: float) -> np.ndarray:
+    """Fast causal rolling MAD using pandas' optimized rolling kernels."""
+    s = pd.Series(np.asarray(x, dtype=float))
+    min_periods = min(max(10, window // 10), window)
+    med = s.rolling(window=window, min_periods=min_periods).median()
+    deviation = (s - med).abs()
+    mad = deviation.rolling(window=window, min_periods=min_periods).median()
+    scale = 1.4826 * mad
+    fallback = s.rolling(window=window, min_periods=min_periods).std(ddof=0)
+    scale = scale.where(np.isfinite(scale) & (scale > 1e-9), fallback)
+    scale = scale.ffill().bfill().fillna(floor)
+    return np.clip(scale.to_numpy(float), floor, cap)
 
 
 def _runs(mask: np.ndarray) -> List[Tuple[int, int]]:
@@ -116,9 +92,8 @@ def detect_adaptive(
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Detect sustained local disturbances using adaptive robust thresholds.
 
-    Important design property: thresholds are based only on the local
-    residual. Global indices are deliberately excluded so this remains a
-    genuine local detector and can operate when Kp/Dst are unavailable.
+    Kp and Dst are deliberately excluded. The detector can therefore run from
+    one observatory stream even when global indices are delayed or unavailable.
     """
     cfg = config or AdaptiveConfig()
     r = np.asarray(residual, dtype=float)
@@ -128,8 +103,6 @@ def detect_adaptive(
 
     finite = np.isfinite(r)
     if not finite.all():
-        # Missing samples cannot silently create an event. They are filled only
-        # for the short gaps normally allowed by the upstream pipeline.
         good = np.flatnonzero(finite)
         if len(good) < 2:
             return np.full(n, "quiet", dtype=object), {"config": asdict(cfg), "noise_sigma_nt": None}
@@ -137,11 +110,8 @@ def detect_adaptive(
 
     global_floor = _quiet_floor(r, cfg.quiet_scale_quantile)
     scale_window = max(11, int(round(cfg.rolling_scale_minutes * 60.0 / cadence_s)))
-    scale = _rolling_mad_scale(
-        r,
-        scale_window,
-        global_floor,
-        global_floor * max(cfg.max_scale_multiplier, 1.0),
+    scale = _rolling_robust_scale(
+        r, scale_window, global_floor, global_floor * max(cfg.max_scale_multiplier, 1.0)
     )
 
     centered = r - np.median(r)
@@ -150,26 +120,19 @@ def detect_adaptive(
     diff = np.diff(r, prepend=r[0]) / max(cadence_s, 1.0)
     derivative_floor = _quiet_floor(diff, cfg.quiet_scale_quantile)
     derivative_window = max(11, int(round(60.0 * 60.0 / cadence_s)))
-    derivative_scale = _rolling_mad_scale(
-        diff,
-        derivative_window,
-        derivative_floor,
-        derivative_floor * max(cfg.max_scale_multiplier, 1.0),
+    derivative_scale = _rolling_robust_scale(
+        diff, derivative_window, derivative_floor, derivative_floor * max(cfg.max_scale_multiplier, 1.0)
     )
     derivative_z = np.abs(diff) / derivative_scale
 
-    onset_signal = (amplitude_z >= cfg.onset_sigma) | (
-        derivative_z >= cfg.derivative_onset_sigma
-    )
-    clear_signal = (amplitude_z <= cfg.clear_sigma) & (
-        derivative_z <= cfg.derivative_clear_sigma
-    )
     derivative_hold_n = max(1, int(round(cfg.derivative_hold_minutes * 60.0 / cadence_s)))
     derivative_trigger = np.zeros(n, dtype=bool)
     for s, e in _runs(derivative_z >= cfg.derivative_onset_sigma):
         if e - s >= derivative_hold_n:
             derivative_trigger[s:e] = True
-    onset_signal &= (amplitude_z >= cfg.onset_sigma) | derivative_trigger
+
+    onset_signal = (amplitude_z >= cfg.onset_sigma) | derivative_trigger
+    clear_signal = (amplitude_z <= cfg.clear_sigma) & (derivative_z <= cfg.derivative_clear_sigma)
 
     onset_n = max(1, int(round(cfg.onset_minutes * 60.0 / cadence_s)))
     clear_n = max(1, int(round(cfg.clear_minutes * 60.0 / cadence_s)))
@@ -181,19 +144,15 @@ def detect_adaptive(
     state = False
     for i in range(n):
         if onset_signal[i]:
-            above += 1
-            below = 0
+            above += 1; below = 0
         elif clear_signal[i]:
-            below += 1
-            above = 0
+            below += 1; above = 0
         else:
             above = below = 0
         if not state and above >= onset_n:
-            state = True
-            below = 0
+            state = True; below = 0
         elif state and below >= clear_n:
-            state = False
-            above = 0
+            state = False; above = 0
         active[i] = state
 
     runs = _merge_runs(_runs(active), merge_n)
@@ -208,9 +167,6 @@ def detect_adaptive(
     flags[clean & (amplitude_z >= cfg.storm_sigma)] = "minor_storm"
     flags[clean & (amplitude_z >= cfg.major_sigma)] = "major_storm"
     flags[clean & (amplitude_z >= cfg.severe_sigma)] = "severe_storm"
-
-    # A short, high dB/dt pulse is reported as an anomaly rather than being
-    # promoted to a sustained event.
     anomaly = (derivative_z >= cfg.derivative_onset_sigma * 1.8) & ~clean
     flags[anomaly] = "anomaly"
 
