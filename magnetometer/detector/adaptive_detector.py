@@ -23,13 +23,13 @@ def event_mask_from_flags(flags: np.ndarray) -> np.ndarray:
 class AdaptiveConfig:
     # Pointwise onset remains conservative and is useful for impulsive events.
     onset_sigma: float = 6.0
-    # Sustained moderate excursions provide the primary recall path for
-    # gradual disturbances that never cross the pointwise onset threshold.
-    sustained_sigma: float = 4.0
-    sustained_minutes: float = 5.0
+    # Sustained moderate excursions provide the recall path for gradual
+    # disturbances, but must be materially above the local noise floor.
+    sustained_sigma: float = 6.0
+    sustained_minutes: float = 8.0
     sustained_window_minutes: float = 15.0
-    # Confirmation prevents a single moderate spike from opening an event.
-    sustained_confirm_sigma: float = 2.5
+    # Confirmation prevents a single moderate sample from opening an event.
+    sustained_confirm_sigma: float = 3.5
     active_sigma: float = 10.0
     storm_sigma: float = 18.0
     major_sigma: float = 30.0
@@ -37,12 +37,11 @@ class AdaptiveConfig:
     clear_sigma: float = 3.0
     derivative_onset_sigma: float = 7.0
     derivative_clear_sigma: float = 3.5
+    derivative_confirm_sigma: float = 3.5
     rolling_scale_minutes: float = 180.0
     quiet_scale_quantile: float = 0.35
-    # A 3x cap was allowing event-contaminated rolling windows to inflate the
-    # onset threshold to ~10.7 nT in the VIC benchmark. A 2x cap is still
-    # robust to changing station noise while preventing multi-hour events from
-    # masking their own onset.
+    # Keep an upper cap so event-contaminated rolling windows cannot inflate
+    # their own threshold enough to hide a sustained disturbance.
     max_scale_multiplier: float = 2.0
     onset_minutes: float = 5.0
     clear_minutes: float = 10.0
@@ -121,15 +120,10 @@ def detect_adaptive(
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Detect sustained local disturbances using adaptive robust thresholds.
 
-    The detector uses three independent onset paths:
-
-    * a conservative pointwise amplitude trigger for impulsive events;
-    * a short-window RMS persistence trigger for gradual disturbances;
-    * a derivative trigger for fast changes, requiring a modest amplitude
-      confirmation so derivative noise cannot create events by itself.
-
-    Once an event is accepted, the state machine owns the event mask. Severity
-    labels are layered on top and cannot fragment an accepted event.
+    Onset uses three independent paths: conservative pointwise amplitude,
+    persistent short-window energy, and fast derivative change with amplitude
+    confirmation. Once accepted, the state machine owns the event mask and
+    severity labels cannot fragment it.
     """
     cfg = config or AdaptiveConfig()
     r = np.asarray(residual, dtype=float)
@@ -158,12 +152,7 @@ def detect_adaptive(
     )
     amplitude_z = np.abs(centered) / scale
 
-    # Sustained energy is deliberately calculated on the centered residual,
-    # rather than on pointwise amplitude. This catches slow events that remain
-    # below onset_sigma but are consistently elevated for several minutes.
-    sustained_window_n = max(
-        3, int(round(cfg.sustained_window_minutes * 60.0 / cadence_s))
-    )
+    sustained_window_n = max(3, int(round(cfg.sustained_window_minutes * 60.0 / cadence_s)))
     sustained_min_n = max(3, sustained_window_n // 3)
     sustained_rms = _rolling_rms(centered, sustained_window_n, sustained_min_n)
     sustained_scale = np.maximum(scale, global_floor)
@@ -181,48 +170,37 @@ def detect_adaptive(
     derivative_z = np.abs(diff) / derivative_scale
 
     derivative_hold_n = max(1, int(round(cfg.derivative_hold_minutes * 60.0 / cadence_s)))
-    derivative_runs = _runs(derivative_z >= cfg.derivative_onset_sigma)
     derivative_trigger = np.zeros(n, dtype=bool)
-    for s, e in derivative_runs:
+    for s, e in _runs(derivative_z >= cfg.derivative_onset_sigma):
         if e - s >= derivative_hold_n:
             derivative_trigger[s:e] = True
 
-    # Fast path: preserve sensitivity to genuine impulsive excursions.
     point_onset = amplitude_z >= cfg.onset_sigma
-
-    # Sustained path: require both an elevated short-window RMS and a modest
-    # instantaneous amplitude confirmation. This avoids turning a single noisy
-    # sample into an event while allowing gradual events through.
     sustained_onset = (
         (sustained_z >= cfg.sustained_sigma)
         & (amplitude_z >= cfg.sustained_confirm_sigma)
     )
+    derivative_onset = derivative_trigger & (amplitude_z >= cfg.derivative_confirm_sigma)
 
-    # Derivative path is an alternative onset route, not a prerequisite for
-    # amplitude detection. Modest amplitude confirmation makes it resistant to
-    # isolated derivative spikes.
-    derivative_onset = derivative_trigger & (amplitude_z >= cfg.sustained_confirm_sigma)
-
-    onset_signal = point_onset | sustained_onset | derivative_onset
-    clear_signal = (amplitude_z <= cfg.clear_sigma) & (sustained_z <= cfg.sustained_sigma * 0.75) & (
-        derivative_z <= cfg.derivative_clear_sigma
-    )
-
-    onset_n = max(1, int(round(cfg.onset_minutes * 60.0 / cadence_s)))
     sustained_n = max(1, int(round(cfg.sustained_minutes * 60.0 / cadence_s)))
-    clear_n = max(1, int(round(cfg.clear_minutes * 60.0 / cadence_s)))
-    min_n = max(1, int(round(cfg.min_event_minutes * 60.0 / cadence_s)))
-    merge_n = max(0, int(round(cfg.merge_gap_minutes * 60.0 / cadence_s)))
-
-    # Pointwise/derivative paths use the normal onset hold; sustained-path
-    # candidates get an independent persistence requirement.
-    strong_onset = point_onset | derivative_onset
     sustained_onset_persistent = np.zeros(n, dtype=bool)
     for s, e in _runs(sustained_onset):
         if e - s >= sustained_n:
             sustained_onset_persistent[s:e] = True
 
+    strong_onset = point_onset | derivative_onset
     onset_signal = strong_onset | sustained_onset_persistent
+
+    clear_signal = (
+        (amplitude_z <= cfg.clear_sigma)
+        & (sustained_z <= cfg.sustained_sigma * 0.75)
+        & (derivative_z <= cfg.derivative_clear_sigma)
+    )
+
+    onset_n = max(1, int(round(cfg.onset_minutes * 60.0 / cadence_s)))
+    clear_n = max(1, int(round(cfg.clear_minutes * 60.0 / cadence_s)))
+    min_n = max(1, int(round(cfg.min_event_minutes * 60.0 / cadence_s)))
+    merge_n = max(0, int(round(cfg.merge_gap_minutes * 60.0 / cadence_s)))
 
     active = np.zeros(n, dtype=bool)
     above = below = 0
@@ -235,11 +213,7 @@ def detect_adaptive(
             below += 1
             above = 0
         else:
-            # Do not immediately forget an incipient disturbance. The
-            # sustained path has already supplied persistence; this branch only
-            # controls hysteresis between individual qualifying samples.
-            above = 0
-            below = 0
+            above = below = 0
         if not state and above >= onset_n:
             state = True
             below = 0
