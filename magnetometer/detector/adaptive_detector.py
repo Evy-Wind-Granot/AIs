@@ -7,6 +7,22 @@ import numpy as np
 import pandas as pd
 
 
+EVENT_FLAGS = frozenset(
+    {"unsettled", "active", "minor_storm", "major_storm", "severe_storm"}
+)
+
+
+def event_mask_from_flags(flags: np.ndarray) -> np.ndarray:
+    """Return the authoritative sustained-event mask.
+
+    ``anomaly`` is intentionally excluded: it is a transient diagnostic state,
+    not an event produced by the detector state machine. Keeping this rule in
+    one place prevents sample, event, and stability metrics from disagreeing.
+    """
+    f = np.asarray(flags, dtype=object)
+    return np.isin(f, list(EVENT_FLAGS))
+
+
 @dataclass(frozen=True)
 class AdaptiveConfig:
     onset_sigma: float = 6.0
@@ -105,7 +121,8 @@ def detect_adaptive(
     if not finite.all():
         good = np.flatnonzero(finite)
         if len(good) < 2:
-            return np.full(n, "quiet", dtype=object), {"config": asdict(cfg), "noise_sigma_nt": None}
+            flags = np.full(n, "quiet", dtype=object)
+            return flags, {"config": asdict(cfg), "noise_sigma_nt": None, "event_count": 0}
         r = np.interp(np.arange(n), good, r[good])
 
     global_floor = _quiet_floor(r, cfg.quiet_scale_quantile)
@@ -144,15 +161,19 @@ def detect_adaptive(
     state = False
     for i in range(n):
         if onset_signal[i]:
-            above += 1; below = 0
+            above += 1
+            below = 0
         elif clear_signal[i]:
-            below += 1; above = 0
+            below += 1
+            above = 0
         else:
             above = below = 0
         if not state and above >= onset_n:
-            state = True; below = 0
+            state = True
+            below = 0
         elif state and below >= clear_n:
-            state = False; above = 0
+            state = False
+            above = 0
         active[i] = state
 
     runs = _merge_runs(_runs(active), merge_n)
@@ -170,7 +191,10 @@ def detect_adaptive(
     anomaly = (derivative_z >= cfg.derivative_onset_sigma * 1.8) & ~clean
     flags[anomaly] = "anomaly"
 
-    event_runs = _runs(clean)
+    # The sustained state-machine output is the only authoritative event
+    # segmentation. Anomalies are explicitly excluded from event accounting.
+    event_runs = _runs(event_mask_from_flags(flags))
+    anomaly_runs = _runs(flags == "anomaly")
     diagnostics: Dict[str, Any] = {
         "config": asdict(cfg),
         "noise_sigma_nt": float(global_floor),
@@ -183,9 +207,11 @@ def detect_adaptive(
         "storm_threshold_nt_median": float(cfg.storm_sigma * np.median(scale)),
         "major_threshold_nt_median": float(cfg.major_sigma * np.median(scale)),
         "severe_threshold_nt_median": float(cfg.severe_sigma * np.median(scale)),
-        "flagged_fraction": float(np.mean(clean)),
+        "flagged_fraction": float(np.mean(event_mask_from_flags(flags))),
         "event_count": len(event_runs),
         "event_durations_minutes": [round((e - s) * cadence_s / 60.0, 2) for s, e in event_runs],
+        "anomaly_count": len(anomaly_runs),
+        "anomaly_sample_fraction": float(np.mean(flags == "anomaly")),
         "max_amplitude_z": float(np.nanmax(amplitude_z)),
         "max_derivative_z": float(np.nanmax(derivative_z)),
     }
