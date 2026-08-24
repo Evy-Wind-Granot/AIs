@@ -33,9 +33,6 @@ def main() -> int:
     residual = rng.normal(0.0, 2.0, n)
     expected = np.zeros(n, dtype=bool)
 
-    # Two deliberately obvious local disturbances with different shapes.
-    # The second is oscillatory so both short-window energy and range remain
-    # elevated for much longer than the 10-minute persistence requirement.
     residual[7 * 60 : 9 * 60] += np.linspace(0.0, 180.0, 120)
     residual[9 * 60 : 11 * 60] += np.linspace(180.0, 0.0, 120)
     expected[7 * 60 : 11 * 60] = True
@@ -54,12 +51,12 @@ def main() -> int:
     assert det_diag["event_count"] >= 1, det_diag
     assert metrics["reference_events"] == ref_diag["event_count"], metrics
     assert metrics["predicted_events"] == det_diag["event_count"], metrics
-    assert metrics["reference_events"] >= 1
-    assert metrics["predicted_events"] >= 1
     assert _overlap_exists(reference, expected), (ref_diag, "reference did not overlap injected disturbance")
     assert _overlap_exists(prediction_mask, expected), (det_diag, "detector did not overlap injected disturbance")
 
-    # Anomaly is a transient diagnostic state, not an event.
+    min_event_minutes = float(det_diag["config"]["min_event_minutes"])
+    assert all(duration >= min_event_minutes for duration in det_diag["event_durations_minutes"]), det_diag
+
     anomaly = prediction == "anomaly"
     assert not np.any(prediction_mask & anomaly)
 
