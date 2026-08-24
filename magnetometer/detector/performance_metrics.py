@@ -12,7 +12,7 @@ import pandas as pd
 
 from magnetometer_demo import fetch_kp_gfz, handle_gaps, parse_iaga2002_to_dataframe, run_analysis
 from intermagnet_client import fetch_intermagnet_long_range
-from adaptive_detector import detect_adaptive
+from adaptive_detector import detect_adaptive, event_mask_from_flags
 from local_event_benchmark import build_local_reference, compare_events
 
 
@@ -43,9 +43,12 @@ def binary_metrics(reference, prediction):
     p = np.asarray(prediction, bool)
     if len(r) != len(p):
         raise ValueError("reference and prediction lengths differ")
-    tp = int(np.sum(r & p)); tn = int(np.sum(~r & ~p))
-    fp = int(np.sum(~r & p)); fn = int(np.sum(r & ~p))
-    precision = _safe(tp, tp + fp); recall = _safe(tp, tp + fn)
+    tp = int(np.sum(r & p))
+    tn = int(np.sum(~r & ~p))
+    fp = int(np.sum(~r & p))
+    fn = int(np.sum(r & ~p))
+    precision = _safe(tp, tp + fp)
+    recall = _safe(tp, tp + fn)
     f1 = _safe(2 * precision * recall, precision + recall)
     specificity = _safe(tn, tn + fp)
     return BinaryMetrics(
@@ -66,17 +69,18 @@ def _runs(mask):
 
 
 def stability_metrics(flags, cadence_s):
-    v = np.asarray(flags, object)
-    active = v != "quiet"
-    changes = int(np.sum(v[1:] != v[:-1])) if len(v) > 1 else 0
-    flagged_runs = _runs(active); quiet_runs = _runs(~active)
-    days = len(v) * cadence_s / 86400
+    """Operational stability of the authoritative sustained-event mask."""
+    event_mask = event_mask_from_flags(flags)
+    changes = int(np.sum(event_mask[1:] != event_mask[:-1])) if len(event_mask) > 1 else 0
+    flagged_runs = _runs(event_mask)
+    quiet_runs = _runs(~event_mask)
+    days = len(event_mask) * cadence_s / 86400
     return {
-        "samples": len(v),
+        "samples": len(event_mask),
         "state_changes": changes,
         "state_changes_per_day": _safe(changes, days),
-        "flagged_samples": int(active.sum()),
-        "flagged_fraction": _safe(int(active.sum()), len(v)),
+        "flagged_samples": int(event_mask.sum()),
+        "flagged_fraction": _safe(int(event_mask.sum()), len(event_mask)),
         "longest_flagged_minutes": max((e - s for s, e in flagged_runs), default=0) * cadence_s / 60,
         "longest_quiet_minutes": max((e - s for s, e in quiet_runs), default=0) * cadence_s / 60,
     }
@@ -111,7 +115,10 @@ def evaluate_period(observatory, start_date, days, column="f_nt", cadence_s=60, 
     # thresholds. This is the metric used to redesign the detector.
     reference, reference_diag = build_local_reference(residual, cadence_s)
     flags, detector_diag = detect_adaptive(residual, cadence_s)
-    predicted = flags != "quiet"
+
+    # IMPORTANT: use the detector's sustained state-machine output everywhere.
+    # ``anomaly`` is a diagnostic transient and is not counted as an event.
+    predicted = event_mask_from_flags(flags)
     local = {
         "sample": asdict(binary_metrics(reference, predicted)),
         "event": compare_events(reference, predicted, cadence_s),
@@ -127,10 +134,11 @@ def evaluate_period(observatory, start_date, days, column="f_nt", cadence_s=60, 
         )
         ka = _align_kp(df.index, kp).to_numpy(float)
         valid = np.isfinite(ka)
-        kflags = flags[valid]; ka = ka[valid]
+        kflags = flags[valid]
+        ka = ka[valid]
         active_ref = ka >= 4
         storm_ref = ka >= 5
-        active_pred = np.isin(kflags, ["active", "minor_storm", "major_storm", "severe_storm", "anomaly"])
+        active_pred = event_mask_from_flags(kflags)
         storm_pred = np.isin(kflags, ["minor_storm", "major_storm", "severe_storm"])
         global_context = {
             "available": True,
@@ -142,8 +150,9 @@ def evaluate_period(observatory, start_date, days, column="f_nt", cadence_s=60, 
         global_context = {"available": False, "error": f"{type(exc).__name__}: {exc}"}
 
     return {
-        "benchmark_version": "local-v2",
+        "benchmark_version": "local-v3",
         "reference_status": "station-local reference; not Kp ground truth",
+        "detector_event_accounting": "single authoritative sustained state-machine mask; anomaly excluded",
         "observatory": observatory,
         "start_date": start_date,
         "days": days,
