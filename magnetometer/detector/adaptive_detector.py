@@ -13,12 +13,7 @@ EVENT_FLAGS = frozenset(
 
 
 def event_mask_from_flags(flags: np.ndarray) -> np.ndarray:
-    """Return the authoritative sustained-event mask.
-
-    ``anomaly`` is intentionally excluded: it is a transient diagnostic state,
-    not an event produced by the detector state machine. Keeping this rule in
-    one place prevents sample, event, and stability metrics from disagreeing.
-    """
+    """Return the authoritative sustained-event mask."""
     f = np.asarray(flags, dtype=object)
     return np.isin(f, list(EVENT_FLAGS))
 
@@ -68,7 +63,6 @@ def _quiet_floor(x: np.ndarray, quantile: float) -> float:
 
 
 def _rolling_robust_scale(x: np.ndarray, window: int, floor: float, cap: float) -> np.ndarray:
-    """Fast causal rolling MAD using pandas' optimized rolling kernels."""
     s = pd.Series(np.asarray(x, dtype=float))
     min_periods = min(max(10, window // 10), window)
     med = s.rolling(window=window, min_periods=min_periods).median()
@@ -106,11 +100,7 @@ def detect_adaptive(
     cadence_s: float = 60.0,
     config: AdaptiveConfig | None = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """Detect sustained local disturbances using adaptive robust thresholds.
-
-    Kp and Dst are deliberately excluded. The detector can therefore run from
-    one observatory stream even when global indices are delayed or unavailable.
-    """
+    """Detect sustained local disturbances using adaptive robust thresholds."""
     cfg = config or AdaptiveConfig()
     r = np.asarray(residual, dtype=float)
     n = len(r)
@@ -127,9 +117,7 @@ def detect_adaptive(
 
     global_floor = _quiet_floor(r, cfg.quiet_scale_quantile)
     scale_window = max(11, int(round(cfg.rolling_scale_minutes * 60.0 / cadence_s)))
-    scale = _rolling_robust_scale(
-        r, scale_window, global_floor, global_floor * max(cfg.max_scale_multiplier, 1.0)
-    )
+    scale = _rolling_robust_scale(r, scale_window, global_floor, global_floor * max(cfg.max_scale_multiplier, 1.0))
 
     centered = r - np.median(r)
     amplitude_z = np.abs(centered) / scale
@@ -137,9 +125,7 @@ def detect_adaptive(
     diff = np.diff(r, prepend=r[0]) / max(cadence_s, 1.0)
     derivative_floor = _quiet_floor(diff, cfg.quiet_scale_quantile)
     derivative_window = max(11, int(round(60.0 * 60.0 / cadence_s)))
-    derivative_scale = _rolling_robust_scale(
-        diff, derivative_window, derivative_floor, derivative_floor * max(cfg.max_scale_multiplier, 1.0)
-    )
+    derivative_scale = _rolling_robust_scale(diff, derivative_window, derivative_floor, derivative_floor * max(cfg.max_scale_multiplier, 1.0))
     derivative_z = np.abs(diff) / derivative_scale
 
     derivative_hold_n = max(1, int(round(cfg.derivative_hold_minutes * 60.0 / cadence_s)))
@@ -176,24 +162,30 @@ def detect_adaptive(
             above = 0
         active[i] = state
 
+    # Merge short quiet gaps only for event segmentation, then discard merged
+    # runs that do not satisfy the minimum sustained-event duration.
     runs = _merge_runs(_runs(active), merge_n)
     clean = np.zeros(n, dtype=bool)
     for s, e in runs:
         if e - s >= min_n:
             clean[s:e] = True
 
+    # IMPORTANT: every sample in the accepted state-machine event remains an
+    # event even when its instantaneous amplitude drops below onset_sigma.
+    # Previously those samples were relabeled quiet, fragmenting events and
+    # producing diagnostic event durations shorter than min_event_minutes.
     flags = np.full(n, "quiet", dtype=object)
-    flags[clean & (amplitude_z >= cfg.onset_sigma)] = "unsettled"
+    flags[clean] = "unsettled"
     flags[clean & (amplitude_z >= cfg.active_sigma)] = "active"
     flags[clean & (amplitude_z >= cfg.storm_sigma)] = "minor_storm"
     flags[clean & (amplitude_z >= cfg.major_sigma)] = "major_storm"
     flags[clean & (amplitude_z >= cfg.severe_sigma)] = "severe_storm"
+
     anomaly = (derivative_z >= cfg.derivative_onset_sigma * 1.8) & ~clean
     flags[anomaly] = "anomaly"
 
-    # The sustained state-machine output is the only authoritative event
-    # segmentation. Anomalies are explicitly excluded from event accounting.
-    event_runs = _runs(event_mask_from_flags(flags))
+    event_mask = event_mask_from_flags(flags)
+    event_runs = _runs(event_mask)
     anomaly_runs = _runs(flags == "anomaly")
     diagnostics: Dict[str, Any] = {
         "config": asdict(cfg),
@@ -207,7 +199,7 @@ def detect_adaptive(
         "storm_threshold_nt_median": float(cfg.storm_sigma * np.median(scale)),
         "major_threshold_nt_median": float(cfg.major_sigma * np.median(scale)),
         "severe_threshold_nt_median": float(cfg.severe_sigma * np.median(scale)),
-        "flagged_fraction": float(np.mean(event_mask_from_flags(flags))),
+        "flagged_fraction": float(np.mean(event_mask)),
         "event_count": len(event_runs),
         "event_durations_minutes": [round((e - s) * cadence_s / 60.0, 2) for s, e in event_runs],
         "anomaly_count": len(anomaly_runs),
