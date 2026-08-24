@@ -44,9 +44,12 @@ class AdaptiveConfig:
     # their own threshold enough to hide a sustained disturbance.
     max_scale_multiplier: float = 2.0
     onset_minutes: float = 5.0
-    clear_minutes: float = 10.0
+    # Clearing is based on local amplitude/energy, not derivative noise.
+    clear_minutes: float = 5.0
     min_event_minutes: float = 10.0
-    merge_gap_minutes: float = 20.0
+    # Only join immediately adjacent/recovery fragments. The previous 20-minute
+    # merge could collapse distinct physical events into one long event.
+    merge_gap_minutes: float = 5.0
     derivative_hold_minutes: float = 3.0
 
 
@@ -74,17 +77,34 @@ def _quiet_floor(x: np.ndarray, quantile: float) -> float:
     return _robust_sigma(finite[amp <= cutoff])
 
 
-def _rolling_robust_scale(x: np.ndarray, window: int, floor: float, cap: float) -> np.ndarray:
+def _rolling_baseline_and_scale(
+    x: np.ndarray,
+    window: int,
+    floor: float,
+    cap: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return causal rolling robust baseline and scale."""
     s = pd.Series(np.asarray(x, dtype=float))
     min_periods = min(max(10, window // 10), window)
-    med = s.rolling(window=window, min_periods=min_periods).median()
-    deviation = (s - med).abs()
+    baseline = s.rolling(window=window, min_periods=min_periods).median()
+    deviation = (s - baseline).abs()
     mad = deviation.rolling(window=window, min_periods=min_periods).median()
     scale = 1.4826 * mad
     fallback = s.rolling(window=window, min_periods=min_periods).std(ddof=0)
     scale = scale.where(np.isfinite(scale) & (scale > 1e-9), fallback)
-    scale = scale.ffill().bfill().fillna(floor)
-    return np.clip(scale.to_numpy(float), floor, cap)
+
+    # Never backfill from the future. During startup, use the global quiet
+    # floor and the first available observation as a causal baseline.
+    baseline = baseline.ffill().fillna(float(s.iloc[0]))
+    scale = scale.ffill().fillna(floor)
+    return baseline.to_numpy(float), np.clip(scale.to_numpy(float), floor, cap)
+
+
+def _rolling_rms(x: np.ndarray, window: int, min_periods: int, fill: float) -> np.ndarray:
+    """Causal rolling RMS with a non-leaking startup fill."""
+    s = pd.Series(np.asarray(x, dtype=float))
+    rms = np.sqrt(s.pow(2).rolling(window=window, min_periods=min_periods).mean())
+    return rms.ffill().fillna(float(fill)).to_numpy(float)
 
 
 def _runs(mask: np.ndarray) -> List[Tuple[int, int]]:
@@ -98,6 +118,8 @@ def _runs(mask: np.ndarray) -> List[Tuple[int, int]]:
 
 
 def _merge_runs(runs: List[Tuple[int, int]], max_gap: int) -> List[Tuple[int, int]]:
+    if max_gap <= 0:
+        return list(runs)
     out: List[Tuple[int, int]] = []
     for s, e in runs:
         if out and s - out[-1][1] <= max_gap:
@@ -107,23 +129,23 @@ def _merge_runs(runs: List[Tuple[int, int]], max_gap: int) -> List[Tuple[int, in
     return out
 
 
-def _rolling_rms(x: np.ndarray, window: int, min_periods: int) -> np.ndarray:
-    s = pd.Series(np.asarray(x, dtype=float))
-    rms = np.sqrt(s.pow(2).rolling(window=window, min_periods=min_periods).mean())
-    return rms.ffill().bfill().to_numpy(float)
-
-
 def detect_adaptive(
     residual: np.ndarray,
     cadence_s: float = 60.0,
     config: AdaptiveConfig | None = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """Detect sustained local disturbances using adaptive robust thresholds.
+    """Detect sustained station-local disturbances with causal robust hysteresis.
 
-    Onset uses three independent paths: conservative pointwise amplitude,
-    persistent short-window energy, and fast derivative change with amplitude
-    confirmation. Once accepted, the state machine owns the event mask and
-    severity labels cannot fragment it.
+    The detector uses three onset paths:
+
+    * conservative pointwise amplitude for impulsive disturbances;
+    * sustained local RMS for gradual disturbances;
+    * derivative change with amplitude confirmation for fast onsets.
+
+    All amplitude/energy tests are relative to a trailing local baseline rather
+    than the full-period median, reducing false alarms from slow baseline drift.
+    Event clearing is governed by amplitude and sustained energy alone, so
+    derivative noise cannot keep an already-quiet event open indefinitely.
     """
     cfg = config or AdaptiveConfig()
     r = np.asarray(residual, dtype=float)
@@ -139,29 +161,30 @@ def detect_adaptive(
             return flags, {"config": asdict(cfg), "noise_sigma_nt": None, "event_count": 0}
         r = np.interp(np.arange(n), good, r[good])
 
-    center = float(np.median(r))
-    centered = r - center
+    global_center = float(np.median(r))
+    centered_global = r - global_center
+    global_floor = _quiet_floor(centered_global, cfg.quiet_scale_quantile)
 
-    global_floor = _quiet_floor(centered, cfg.quiet_scale_quantile)
     scale_window = max(11, int(round(cfg.rolling_scale_minutes * 60.0 / cadence_s)))
-    scale = _rolling_robust_scale(
-        centered,
+    local_baseline, scale = _rolling_baseline_and_scale(
+        r,
         scale_window,
         global_floor,
         global_floor * max(cfg.max_scale_multiplier, 1.0),
     )
-    amplitude_z = np.abs(centered) / scale
+    local_residual = r - local_baseline
+    amplitude_z = np.abs(local_residual) / scale
 
     sustained_window_n = max(3, int(round(cfg.sustained_window_minutes * 60.0 / cadence_s)))
     sustained_min_n = max(3, sustained_window_n // 3)
-    sustained_rms = _rolling_rms(centered, sustained_window_n, sustained_min_n)
+    sustained_rms = _rolling_rms(local_residual, sustained_window_n, sustained_min_n, global_floor)
     sustained_scale = np.maximum(scale, global_floor)
     sustained_z = sustained_rms / sustained_scale
 
     diff = np.diff(r, prepend=r[0]) / max(cadence_s, 1.0)
     derivative_floor = _quiet_floor(diff, cfg.quiet_scale_quantile)
     derivative_window = max(11, int(round(60.0 * 60.0 / cadence_s)))
-    derivative_scale = _rolling_robust_scale(
+    _, derivative_scale = _rolling_baseline_and_scale(
         diff,
         derivative_window,
         derivative_floor,
@@ -191,10 +214,12 @@ def detect_adaptive(
     strong_onset = point_onset | derivative_onset
     onset_signal = strong_onset | sustained_onset_persistent
 
+    # Clearing deliberately does not depend on derivative_z. A quiet local
+    # signal must be allowed to close an event even when derivative noise is
+    # elevated because of instrument jitter.
     clear_signal = (
         (amplitude_z <= cfg.clear_sigma)
         & (sustained_z <= cfg.sustained_sigma * 0.75)
-        & (derivative_z <= cfg.derivative_clear_sigma)
     )
 
     onset_n = max(1, int(round(cfg.onset_minutes * 60.0 / cadence_s)))
@@ -214,6 +239,7 @@ def detect_adaptive(
             above = 0
         else:
             above = below = 0
+
         if not state and above >= onset_n:
             state = True
             below = 0
@@ -222,6 +248,9 @@ def detect_adaptive(
             above = 0
         active[i] = state
 
+    # Preserve accepted state-machine events, but only merge very short
+    # recovery gaps. This improves event-level recall by preventing unrelated
+    # disturbances from being collapsed into one giant prediction.
     runs = _merge_runs(_runs(active), merge_n)
     clean = np.zeros(n, dtype=bool)
     for s, e in runs:
@@ -248,6 +277,7 @@ def detect_adaptive(
         "rolling_scale_min_nt": float(np.min(scale)),
         "rolling_scale_median_nt": float(np.median(scale)),
         "rolling_scale_max_nt": float(np.max(scale)),
+        "local_baseline_median_nt": float(np.median(local_baseline)),
         "onset_threshold_nt_median": float(cfg.onset_sigma * np.median(scale)),
         "sustained_threshold_nt_median": float(cfg.sustained_sigma * np.median(scale)),
         "sustained_confirm_threshold_nt_median": float(cfg.sustained_confirm_sigma * np.median(scale)),
